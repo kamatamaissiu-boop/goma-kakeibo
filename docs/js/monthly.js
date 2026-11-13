@@ -10,6 +10,7 @@
 
 import { ApiError, addMonthlyItem, closeMonth, updateMonthlyItem } from "./api.js";
 import { WALLET_JOINT } from "./config.js";
+import { createSlot } from "./photos.js";
 import * as queue from "./queue.js";
 import * as store from "./store.js";
 import { MONTHLY, addMonth, applyQueue, autoRecordMap, closedBy, monthRange, monthlyBase, monthlyItemsFor } from "./summary.js";
@@ -712,6 +713,9 @@ async function stopItem() {
 
 // --- 外から呼ぶもの ---------------------------------------------------------
 
+/** 見出しの写真の枠(アルバムからランダムで1枚。「毎月の設定」を開くたびに替える。写真が無ければ仮の絵) */
+const headPhoto = createSlot($("monthly-photo"), $("monthly-photo-img"));
+
 /** つぎに「毎月の設定」を開いたときに出す月を決めておく(「見る」の明細から来るとき) */
 export function setMonthlyMonth(month) {
   state.nextMonth = month;
@@ -727,6 +731,7 @@ export function showMonthly() {
   setNotice("");
   loadDraft();
   render();
+  headPhoto.shuffle();
 }
 
 /** 保存先から新しいデータが届いたとき: 出ていれば出しなおす(金額を打っている最中は、打ち終わってから) */

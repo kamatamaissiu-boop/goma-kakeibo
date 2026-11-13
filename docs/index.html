@@ -58,6 +58,14 @@
   <symbol id="i-next" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
     <path d="M9 5l7 7-7 7"></path>
   </symbol>
+  <symbol id="i-camera" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 8h3l2-3h6l2 3h3v11H4z"></path>
+    <circle cx="12" cy="13" r="3.5"></circle>
+  </symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+    <path d="M12 5v14"></path>
+    <path d="M5 12h14"></path>
+  </symbol>
 </svg>
 
 <div class="app">
@@ -68,15 +76,20 @@
     <!-- ===== 入力(起動するとここが開く) ===== -->
     <section class="view view--input" id="view-input" aria-label="入力" hidden>
 
-      <!-- 写真の枠。段階4でアルバムの写真に差し替える:
+      <!-- 写真の枠。アルバムの写真から、開くたびにランダムで1枚(js/photos.js の createSlot が入れる):
            #photo-img の src に写真を入れて hidden を外し、#photo の data-state を "photo" にする。
-           カメラボタン(アルバムへ)も段階4で、この枠の右上に足す -->
+           写真が1枚もないあいだは、仮の絵(ごまちゃんの顔)のまま。右上のカメラボタンで、アルバムを開く -->
       <div class="photo" id="photo" data-state="placeholder">
-        <img class="photo__img" id="photo-img" alt="" hidden>
+        <img class="photo__img" id="photo-img" alt="ごまちゃんの写真" draggable="false" hidden>
         <img class="photo__goma" src="img/goma-face.png" alt="ごまちゃん" width="104" height="122" decoding="async">
         <!-- 未送信があるときだけ出す。押すと送り直す -->
         <button class="pending" id="pending" type="button" hidden>
           <span id="pending-text">未送信 0件</span>
+        </button>
+        <!-- はじめは隠しておき、JS(input.js)が出す。版が入れ替わる途中で、前の版の画面(JS・CSS)がこの HTML で
+             動くあいだ、形のくずれたボタンが見えないように -->
+        <button class="photo__camera" id="album-open" type="button" aria-label="アルバムをひらく" hidden>
+          <svg aria-hidden="true" width="22" height="22"><use href="#i-camera"></use></svg>
         </button>
       </div>
 
@@ -194,12 +207,12 @@
         <div class="look__cards" id="look-cards">
 
           <!-- 共同口座のカード。
-               写真は段階4でアルバムの写真に差し替える: #joint-photo-img の src に入れて hidden を外し、
-               #joint-photo の data-state を "photo" にする。いまは仮の絵 -->
+               写真は、アルバムからランダムで1枚(js/photos.js の createSlot): #joint-photo-img の src に入れて hidden を外し、
+               #joint-photo の data-state を "photo" にする。写真が1枚もないあいだは、仮の絵 -->
           <section class="card joint" aria-labelledby="joint-label">
             <div class="joint__head">
               <div class="joint__photo" id="joint-photo" data-state="placeholder">
-                <img class="joint__photo-img" id="joint-photo-img" alt="" hidden>
+                <img class="joint__photo-img" id="joint-photo-img" alt="" draggable="false" hidden>
                 <img class="joint__goma" src="img/goma-face.png" alt="" aria-hidden="true" width="68" height="80" loading="lazy" decoding="async">
               </div>
               <div class="joint__main">
@@ -231,7 +244,15 @@
             <button class="card__more" type="button" data-details="joint">共同口座の明細を見る</button>
           </section>
 
-          <!-- (段階4)「今週の肉球スタンプ」のカードは、ここに足す -->
+          <!-- 今週の肉球スタンプ(今月を見ているときだけ出す)。月〜日の7日。自分がアプリで記録した日に、肉球が押される。
+               まるは JS(view.js)が作る。判定の決まりは summary.js の weekStamps -->
+          <section class="card stamps" id="stamps" aria-labelledby="stamps-title" hidden>
+            <div class="stamps__head">
+              <h2 class="card__title" id="stamps-title">今週の肉球スタンプ</h2>
+              <div class="stamps__note">きろくした日に押されます</div>
+            </div>
+            <ol class="stamps__days" id="stamps-days"></ol>
+          </section>
 
           <!-- 自分の財布のカード: 合計、カテゴリ別の横棒(変動費)、特別費は1行ずつ。
                その下に、固定費(合計に入れる)を1行。
@@ -387,11 +408,11 @@
     <!-- ===== 毎月の設定(仕様書 4.3) ===== -->
     <section class="view view--monthly" id="view-monthly" aria-label="毎月の設定" hidden>
 
-      <!-- 見出し。写真は段階4でアルバムの写真に差し替える: #monthly-photo-img の src に入れて hidden を外し、
-           #monthly-photo の data-state を "photo" にする。いまは仮の絵 -->
+      <!-- 見出し。写真は、アルバムからランダムで1枚(js/photos.js の createSlot): #monthly-photo-img の src に入れて hidden を外し、
+           #monthly-photo の data-state を "photo" にする。写真が1枚もないあいだは、仮の絵 -->
       <div class="mhead">
         <div class="mhead__photo" id="monthly-photo" data-state="placeholder">
-          <img class="mhead__photo-img" id="monthly-photo-img" alt="" hidden>
+          <img class="mhead__photo-img" id="monthly-photo-img" alt="" draggable="false" hidden>
           <img class="mhead__goma" src="img/goma-face.png" alt="" aria-hidden="true" width="48" height="56" loading="lazy" decoding="async">
         </div>
         <div class="mhead__text">
@@ -467,6 +488,37 @@
       </div>
     </section>
 
+    <!-- ===== ごまちゃんアルバム(仕様書 4.4)。入力画面のカメラボタンから開く(下のタブには無い) ===== -->
+    <section class="view view--album" id="view-album" aria-label="ごまちゃんアルバム" hidden>
+      <div class="album__head">
+        <button class="month__btn" id="album-back" type="button" aria-label="入力にもどる">
+          <svg aria-hidden="true" width="24" height="24"><use href="#i-prev"></use></svg>
+        </button>
+        <h1 class="album__title">ごまちゃんアルバム</h1>
+      </div>
+      <p class="album__lead">ここの写真が、入力画面にひらくたびランダムで出ます。ふたりのどちらが足しても、両方のiPhoneに出ます。</p>
+
+      <!-- 「とばしたにゃ」「保存先の更新が必要にゃ」などの一言(あるときだけ) -->
+      <p class="look__notice album__notice" id="album-notice" role="status" aria-live="polite" hidden></p>
+      <!-- 送信のようす(準備中・送信中・送れていない写真があるとき) -->
+      <div class="look__notice album__status" id="album-status" role="status" aria-live="polite" hidden>
+        <p id="album-status-text"></p>
+        <button class="btn-text" id="album-retry" type="button" hidden>もういちど送る</button>
+      </div>
+
+      <!-- 先頭が「写真を足す」。そのあとに、写真のタイル(JS が作る。新しい順) -->
+      <div class="album__grid" id="album-grid">
+        <!-- ボタンの上に、透明なファイル選択を重ねてある(押すと、端末の写真えらびが開く。まとめて何枚でも) -->
+        <label class="album__add" id="album-add">
+          <svg aria-hidden="true" width="28" height="28"><use href="#i-plus"></use></svg>
+          <span>写真を足す</span>
+          <input class="album__file" id="album-file" type="file" accept="image/*" multiple aria-label="写真を足す">
+        </label>
+      </div>
+      <p class="album__hint" id="album-hint">写真を長押しすると、はずせます</p>
+      <p class="album__hint album__hint--pc">パソコンでは、右クリックでも、はずせます</p>
+    </section>
+
   </main>
 
   <!-- 確認のダイアログ(記録を消すとき)。ブラウザの confirm は使わない -->
@@ -477,6 +529,19 @@
       <div class="dialog__buttons">
         <button class="btn" id="confirm-no" type="button">やめる</button>
         <button class="btn btn--danger-fill" id="confirm-yes" type="button">消す</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 確認のダイアログ(アルバムの写真を外すとき) -->
+  <div class="dialog-backdrop" id="photo-confirm" hidden>
+    <div class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="photo-confirm-title" aria-describedby="photo-confirm-what">
+      <p class="dialog__title" id="photo-confirm-title">この写真をはずすにゃ？</p>
+      <img class="dialog__photo" id="photo-confirm-img" alt="" draggable="false" hidden>
+      <p class="dialog__what" id="photo-confirm-what">ふたりのアルバムから、はずれます。</p>
+      <div class="dialog__buttons">
+        <button class="btn" id="photo-confirm-no" type="button">やめる</button>
+        <button class="btn btn--danger-fill" id="photo-confirm-yes" type="button">はずす</button>
       </div>
     </div>
   </div>

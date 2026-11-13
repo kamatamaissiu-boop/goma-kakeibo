@@ -6,11 +6,11 @@
 //   - 相手の財布は出さない(共同口座の入金の内訳にある、相手の入金額だけは見える)。
 //   - 「毎月の設定」で確定した固定費・貯蓄も明細に出すが、ここからは直せない(押すと「毎月の設定」へ)。
 //   集計の決まりは summary.js の先頭に書いてある。
-//
-// まだ無いもの(足す場所は index.html にコメントで示してある)
-//   段階4: 「今週の肉球スタンプ」、共同口座カードの写真
+//   - 共同口座のカードの写真は、アルバムからランダムで1枚(photos.js の createSlot。写真が無ければ仮の絵)。
+//   - 「今週の肉球スタンプ」は、今月を見ているときだけ出す(判定の決まりは summary.js の weekStamps)。
 
 import { DEFAULT_CATEGORIES, WALLET_JOINT } from "./config.js";
+import { createSlot } from "./photos.js";
 import * as queue from "./queue.js";
 import * as store from "./store.js";
 import {
@@ -25,6 +25,7 @@ import {
   monthRange,
   recordMonth,
   summarize,
+  weekStamps,
 } from "./summary.js";
 import { digitsOnly, formatAmount, formatDateShort, isDateString, todayString } from "./util.js";
 
@@ -93,6 +94,9 @@ const el = {
   spend: $("joint-spend"),
   spendRate: $("joint-spend-rate"),
   spendFixed: $("joint-spend-fixed"),
+  // 今週の肉球スタンプ
+  stamps: $("stamps"),
+  stampDays: $("stamps-days"),
   // 自分の財布
   walletTitle: $("wallet-title"),
   walletTotal: $("wallet-total"),
@@ -157,6 +161,9 @@ const state = {
 
 /** app.js から受け取る合図(「毎月の設定」を、その月で開く) */
 let hooks = { openMonthly() {} };
+
+/** 共同口座のカードの写真の枠(アルバムからランダムで1枚。「見る」を開くたびに替える) */
+const jointPhoto = createSlot($("joint-photo"), $("joint-photo-img"));
 
 // --- 小さな道具 -------------------------------------------------------------
 
@@ -243,6 +250,34 @@ function renderJoint(joint) {
   // 支出に入っている固定費(「毎月の設定」で確定した分)
   el.spendFixed.hidden = joint.fixed === 0;
   el.spendFixed.textContent = `うち固定費 ${yen(joint.fixed)}`;
+}
+
+/**
+ * 「今週の肉球スタンプ」。今月を見ているときだけ出す(「今週」= きょうを含む月〜日。前の月を見ているときは出さない)。
+ * 自分がアプリで1件以上記録した日に、肉球が押される(まだ送れていない記録も数える)。
+ */
+function renderStamps(records) {
+  const today = todayString();
+  const show = state.month === today.slice(0, 7);
+  el.stamps.hidden = !show;
+  if (!show) return;
+  const days = weekStamps(records, state.user, today);
+  el.stampDays.textContent = "";
+  for (const day of days) {
+    const li = node("li", "stamp");
+    li.toggleAttribute("data-on", day.stamped);
+    li.toggleAttribute("data-today", day.isToday);
+    const mark = node("span", "stamp__mark");
+    if (day.stamped) {
+      mark.innerHTML = '<svg aria-hidden="true" width="20" height="20" fill="currentColor"><use href="#i-paw"></use></svg>';
+    }
+    const label = node("span", "stamp__day", day.label);
+    label.setAttribute("aria-hidden", "true");
+    const status = day.stamped ? "きろくした" : day.isFuture ? "これから" : "きろくなし";
+    const sr = node("span", "sr-only", `${day.label}曜日${day.isToday ? "（きょう）" : ""}: ${status}`);
+    li.append(mark, label, sr);
+    el.stampDays.append(li);
+  }
 }
 
 /** 自分の財布のカードの下のほうの1行(固定費・貯蓄・収入) */
@@ -514,6 +549,7 @@ function render() {
   if (emptyText) return;
 
   renderJoint(result.joint);
+  renderStamps(records);
   renderWallet(result.wallet);
   renderEstimate(records);
   renderDetails(result.details, pendingIds);
@@ -737,6 +773,7 @@ export function showView() {
   closeEdit(false);
   setNotice("");
   render();
+  jointPhoto.shuffle();
 }
 
 /** 保存先から新しいデータが届いた・キューが変わったとき: 出ていれば出しなおす */

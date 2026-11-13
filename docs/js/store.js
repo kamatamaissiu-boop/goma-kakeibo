@@ -13,6 +13,9 @@ export const KEYS = Object.freeze({
   monthlyClosed: "goma.monthlyClosed", // 月の確定の一覧(JSON の配列。前回取得分)
   monthlyReady: "goma.monthlyReady",   // 保存先が「毎月の設定」に対応した版か: "1" | "0"(まだ分からなければ無い)
   monthlyDrafts: "goma.monthlyDrafts", // 毎月の設定の下書き(JSON。「名前|月」→ { 項目id: 入力中の金額 })
+  photos: "goma.photos",               // アルバムの写真の一覧(JSON の配列 {id, 足した人, 追加日時}。前回取得分。写真の中身は photos.js が別に保存する)
+  photosReady: "goma.photosReady",     // 保存先が「アルバム」に対応した版か: "1" | "0"(まだ分からなければ無い)
+  photoRemovals: "goma.photoRemovals", // まだ保存先に送れていない「写真を外す」(JSON の配列 {id, user})
 });
 
 // プライベートブラウズなどで localStorage が使えない場合も、画面が止まらないようにする
@@ -82,6 +85,8 @@ export function clearLogin() {
   remove(KEYS.monthlyItems);
   remove(KEYS.monthlyClosed);
   remove(KEYS.monthlyReady);
+  remove(KEYS.photosReady);
+  // アルバムの写真の一覧と中身は消さない(2人で同じものなので、だれが入れ直しても、そのまま使える)
   // 毎月の設定の下書きは消さない(名前ごとに分けてあるので、同じ人が入れ直せば続きから)
 }
 
@@ -183,6 +188,39 @@ export function setMonthlyDraft(user, month, draft) {
     delete all[key];
   }
   return write(KEYS.monthlyDrafts, JSON.stringify(all));
+}
+
+// --- アルバム(写真の一覧だけ。写真の中身は大きいので、photos.js が IndexedDB に保存する) ----
+
+/** 前回取得した、アルバムの写真の一覧({id, 足した人, 追加日時}) */
+export function getPhotos() {
+  return readList(KEYS.photos).filter((p) => p && typeof p.id === "string" && p.id);
+}
+
+export function setPhotos(list) {
+  return write(KEYS.photos, JSON.stringify(Array.isArray(list) ? list : []));
+}
+
+/**
+ * 保存先(GAS)が「アルバム」に対応した版か。
+ * @returns {boolean | null} null = まだ一度も確かめられていない
+ */
+export function getPhotosReady() {
+  const value = read(KEYS.photosReady);
+  return value === "1" ? true : value === "0" ? false : null;
+}
+
+export function setPhotosReady(ready) {
+  write(KEYS.photosReady, ready ? "1" : "0");
+}
+
+/** まだ保存先に送れていない「写真を外す」({id, user}。古い順) */
+export function getPhotoRemovals() {
+  return readList(KEYS.photoRemovals).filter((p) => p && typeof p.id === "string" && p.id);
+}
+
+export function setPhotoRemovals(list) {
+  return write(KEYS.photoRemovals, JSON.stringify(Array.isArray(list) ? list : []));
 }
 
 /** 未送信のキュー(なければ空の配列) */

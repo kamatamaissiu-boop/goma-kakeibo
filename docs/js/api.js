@@ -7,7 +7,7 @@
 // 返り方: JSON
 //   成功 { "ok": true, … }   失敗 { "ok": false, "error": "auth" など }
 
-import { GAS_URL, API_TIMEOUT_MS } from "./config.js";
+import { GAS_URL, API_TIMEOUT_MS, PHOTO_TIMEOUT_MS } from "./config.js";
 import { getAikotoba } from "./store.js";
 
 /**
@@ -22,6 +22,8 @@ import { getAikotoba } from "./store.js";
  *   invalid        … 送った内容がおかしい(金額が 0 など)。送り直しても通らない
  *   forbidden      … 相手の財布の記録なので、なおしたり消したりできない
  *   unknown_action … 保存先(GAS)が古い版のまま。貼り直しとデプロイが必要
+ *   not_found      … その写真は、もうアルバムにない(外された)
+ *   drive          … 保存先が、写真置き場(Google ドライブ)をあつかえなかった。少し待てば通ることが多い
  *   それ以外       … サーバー側のエラー(server / bad_request)
  */
 export class ApiError extends Error {
@@ -43,6 +45,7 @@ export function isConfigured() {
  * @param {object} [params] その action に必要な値
  * @param {object} [options]
  * @param {string} [options.aikotoba] 合言葉(省略時は端末に覚えているもの)
+ * @param {number} [options.timeoutMs] 応答を待つ上限(省略時は API_TIMEOUT_MS)
  * @returns {Promise<object>} ok:true の応答
  */
 export async function callApi(action, params = {}, options = {}) {
@@ -53,7 +56,7 @@ export async function callApi(action, params = {}, options = {}) {
   const body = JSON.stringify({ ...params, action, 合言葉: aikotoba });
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), options.timeoutMs || API_TIMEOUT_MS);
 
   let response;
   try {
@@ -100,6 +103,7 @@ export function login(aikotoba) {
 
 /**
  * 起動時にまとめて取る: 誰の iPhone か、カテゴリ一覧、削除されていない記録の全件。
+ * 新しい版の保存先なら、毎月の項目(monthlyItems / monthlyClosed)と、アルバムの写真の一覧(photos)も入っている。
  * @returns {Promise<{ok: true, user: string, categories: string[], records: object[]}>}
  */
 export function sync() {
@@ -188,4 +192,34 @@ export function updateMonthlyItem(id, patch) {
  */
 export function closeMonth(month, amounts, removes) {
   return callApi("closeMonth", { 月: month, 金額: amounts, 消す: removes });
+}
+
+// --- アルバム(保存先が古い版のあいだは、どれも unknown_action になる) -----------------
+
+/**
+ * 写真を1枚足す。同じ id を何度送っても、保存先には1枚しか置かれない。
+ * @param {string} id   端末で作った id
+ * @param {string} data JPEG を base64 にした文字
+ * @returns {Promise<{ok: true, id: string, duplicate: boolean, 足した人: string, 追加日時: string}>}
+ */
+export function addPhoto(id, data) {
+  return callApi("addPhoto", { id, データ: data }, { timeoutMs: PHOTO_TIMEOUT_MS });
+}
+
+/**
+ * 写真を1枚取る。もうアルバムにない写真は not_found。
+ * @param {string} id
+ * @returns {Promise<{ok: true, id: string, データ: string}>} データ = JPEG を base64 にした文字
+ */
+export function getPhoto(id) {
+  return callApi("getPhoto", { id }, { timeoutMs: PHOTO_TIMEOUT_MS });
+}
+
+/**
+ * 写真をアルバムから外す(2人のどちらでも外せる)。何度送っても安全。
+ * @param {string} id
+ * @returns {Promise<{ok: true, id: string, found: boolean}>}
+ */
+export function removePhoto(id) {
+  return callApi("removePhoto", { id });
 }

@@ -5,6 +5,7 @@
 //   記録は端末のキュー(queue.js)に積むだけで、保存先への送信は裏で行う。待たせない。
 
 import { DEFAULT_CATEGORIES, MEMO_SUGGESTION_COUNT, WALLET_JOINT } from "./config.js";
+import { createSlot } from "./photos.js";
 import * as queue from "./queue.js";
 import * as store from "./store.js";
 import { applyQueue } from "./summary.js";
@@ -21,6 +22,8 @@ const DONE_SHOW_MS = 10 * 1000;
 const SLEEP_DAYS = 3;
 /** この時刻(端末の時計)をすぎても、今日の自分の記録がないと、ジト目になる */
 const NIGHT_HOUR = 20;
+/** アプリを離れてこの時間がたってから戻ったら、「開いた」と見なして、上の写真を別の1枚に替える */
+const PHOTO_SHUFFLE_MS = 30 * 1000;
 
 /** 吹き出しの左に出す絵(表示の大きさ) */
 const FIGURE = Object.freeze({
@@ -44,6 +47,8 @@ const LINE = Object.freeze({
 
 const el = {
   photo: document.getElementById("photo"),
+  photoImg: document.getElementById("photo-img"),
+  albumOpen: document.getElementById("album-open"),
   pending: document.getElementById("pending"),
   pendingText: document.getElementById("pending-text"),
   paw: document.getElementById("input-paw"),
@@ -85,6 +90,12 @@ const state = {
   doneAt: 0,             // 記録の直後の吹き出しを出した時刻
   doneTimer: 0,
 };
+
+/** 上の写真の枠: アルバムの写真から、開くたびにランダムで1枚(写真が1枚もないあいだは、仮の絵のまま) */
+const photoSlot = createSlot(el.photo, el.photoImg);
+
+/** app.js から受け取る合図(アルバムを開く) */
+let hooks = { openAlbum() {} };
 
 // --- 一言(吹き出し) ---------------------------------------------------------
 
@@ -508,6 +519,8 @@ export function showInput() {
   renderDate();
   renderBubble();
   renderPending();
+  // 開くたびに、写真を別の1枚に(端末に保存してある写真から、すぐ出す)
+  photoSlot.shuffle();
 }
 
 /** 記録の直後の吹き出しの時間がすぎていたら、挨拶に戻す(裏にいるあいだはタイマーが止まることがあるので、戻ってきたときにも確かめる) */
@@ -529,9 +542,12 @@ export function onResume() {
   if (state.date && state.hiddenAt && Date.now() - state.hiddenAt > DATE_KEEP_MS) {
     state.date = null;
   }
+  const away = state.hiddenAt ? Date.now() - state.hiddenAt : 0;
   state.hiddenAt = 0;
   renderDate();
   if (!state.user) return;
+  // しばらく離れてから戻った = 開き直した、と見なして、写真を替える
+  if (away > PHOTO_SHUFFLE_MS) photoSlot.shuffle();
   expireDone();
   // 日付や時刻が変わっていれば、挨拶のようす(ねむる・ジト目)も変わる
   if (state.mode === "greeting") renderBubble();
@@ -541,7 +557,14 @@ export function onHide() {
   state.hiddenAt = Date.now();
 }
 
-export function initInput() {
+/**
+ * @param {object} [callbacks]
+ * @param {() => void} [callbacks.openAlbum] アルバムを開く(写真の右上のカメラボタン)
+ */
+export function initInput(callbacks = {}) {
+  hooks = { ...hooks, ...callbacks };
+  el.albumOpen.hidden = false;
+  el.albumOpen.addEventListener("click", () => hooks.openAlbum());
   for (const button of el.wallets) {
     button.addEventListener("click", () => selectWallet(button.dataset.wallet));
   }

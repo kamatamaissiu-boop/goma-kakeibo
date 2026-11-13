@@ -125,6 +125,52 @@ export function applyQueue(saved, ops, user) {
   return { records: Array.from(map.values()), pendingIds };
 }
 
+const WEEKDAY_LABELS = ["月", "火", "水", "木", "金", "土", "日"];
+
+function toDateOnly(date) {
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+}
+
+/**
+ * 「記録した日」('YYYY-MM-DD')。お金が動いた日(日付)ではなく、アプリに入れた日(作成日時)で数える。
+ * あとから前の日付でまとめて入れても「きょう、つけた」ことになるように(入力画面の、ねむる・ジト目と同じ決まり)。
+ * 作成日時が読めないときだけ、日付を使う。
+ */
+export function recordedDay(record) {
+  const created = String((record && record["作成日時"]) || "").slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(created)) return created;
+  const date = String((record && record["日付"]) || "");
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : "";
+}
+
+/**
+ * 「今週の肉球スタンプ」(仕様書 4.2 の 2)。きょうを含む週の、月曜〜日曜の7日。
+ * スタンプが付くのは、自分がアプリで1件以上記録した日:
+ *   - 記録した人が自分で、元が「アプリ」の記録(財布は、自分でも共同口座でもよい)。
+ *     相手の記録・「毎月の設定」の自動の記録・フォームから取り込んだ記録は数えない。
+ *   - 日にちは「記録した日」(recordedDay)。
+ *   - まだ送れていない記録も数えるには、applyQueue で重ねた一覧を渡す。
+ * @param {object[]} records 記録の一覧
+ * @param {string} user この iPhone の持ち主
+ * @param {string} today きょう 'YYYY-MM-DD'
+ * @returns {{date: string, label: string, stamped: boolean, isToday: boolean, isFuture: boolean}[]} 月曜から順に7つ
+ */
+export function weekStamps(records, user, today) {
+  const [y, m, d] = today.split("-").map(Number);
+  const base = new Date(y, m - 1, d);
+  const fromMonday = (base.getDay() + 6) % 7; // 月 = 0 … 日 = 6
+  const days = new Set();
+  for (const r of records) {
+    if (!r || r["記録した人"] !== user || r["元"] !== "アプリ") continue;
+    const day = recordedDay(r);
+    if (day) days.add(day);
+  }
+  return WEEKDAY_LABELS.map((label, i) => {
+    const date = toDateOnly(new Date(y, m - 1, d - fromMonday + i));
+    return { date, label, stamped: days.has(date), isToday: date === today, isFuture: date > today };
+  });
+}
+
 /** この人の画面に出してよい記録か(自分の財布・共同口座・だれかの「共同へ入金」) */
 export function isVisible(record, user) {
   return record["財布"] === user || record["財布"] === WALLET_JOINT || record["種類"] === KIND.DEPOSIT;

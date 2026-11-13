@@ -16,7 +16,14 @@
  *    「2026年収支表」やフォームの回答シートなど、もとからあるシートには触れない。
  *  - 合言葉そのものは、どこにも保存しない・ログにも出さない。
  *    保存するのは「ソルト付き SHA-256 のハッシュ値」だけ。
- *  - 合言葉が合わない通信には、データを一切返さない。
+ *  - 合言葉が合わない通信には、データを一切返さない(写真も返さない)。
+ *  - Google ドライブで触るのは、このスクリプトが自分で作ったアルバム用のフォルダ
+ *    (「ごまちゃん家計簿アルバム」。ID は `設定` シートに保存)と、その中の写真だけ。
+ *    ほかのファイルやフォルダは、読まない・探さない・動かさない・消さない。
+ *    写真を出す・外すときは、`写真` シートにあるファイルIDだけを扱い、
+ *    そのファイルがアルバムのフォルダの中にあることを確かめてから行う。
+ *    フォルダの共有設定は変えない(非公開のまま。写真の出し入れは、このスクリプト経由だけ)。
+ *    写真を外すときは、ドライブのゴミ箱へ入れるだけ(完全には消さない)。
  *
  * コードを直したとき(2回目以降)
  *  - このファイルの中身をすべて貼り直して保存し、
@@ -34,6 +41,15 @@
  *    その月の分が `記録` に「元 = 自動」で入る(id は「auto-年月-項目id」。確定し直すと同じ行を書きかえる)。
  *  - 税金・社会保険の5項目(2人分)は、アプリが最初に読みに来たときに、無ければ自動で足す(1回だけ)。
  *  - 持ち主は、シートのいまの値で決める(B列を手で書きかえれば、次の確定からその財布の記録になる)。
+ *
+ * ごまちゃんアルバム(写真)
+ *  - 写真は、Google ドライブの非公開フォルダ「ごまちゃん家計簿アルバム」に置く(マイドライブの直下)。
+ *    フォルダは、メニュー「⑥ アルバムの準備」か、最初の写真が足されたときに、無ければ作る。
+ *  - ドライブを使うので、このコードに貼りかえたあと、1回だけ「ドライブへのアクセス」の許可が要る。
+ *    メニューの ⑥ を実行すると、許可の画面が出る(新バージョンをデプロイする前に、済ませておく)。
+ *  - `写真` シートの1行が写真1枚(id / ドライブのファイルID / 足した人 / 追加日時 / 有効)。
+ *    アプリで外すと「有効」が FALSE になり、ファイルはドライブのゴミ箱に入る(30日で自動的に消える)。
+ *  - アルバムのフォルダや中の写真は、ドライブの画面で動かしたり消したりしない(アプリに出なくなる)。
  */
 
 // ============================================================================
@@ -70,8 +86,20 @@ const SETTING_KEY = {
   SALT: 'ソルト',
   HASH_PREFIX: '合言葉ハッシュ_', // うしろに名前が付く(例: 合言葉ハッシュ_ゆうき)
   MONTHLY_READY: '毎月の項目の準備', // 税金の項目を足すなどの準備が済んだら「済み」が入る
+  ALBUM_FOLDER: 'アルバムのフォルダID', // 写真を置く、ドライブのフォルダの ID(このスクリプトが作ったもの)
 };
 const MONTHLY_READY_VALUE = '済み';
+
+/** アルバムのフォルダの名前(マイドライブの直下に作る。共有はしない) */
+const ALBUM_FOLDER_NAME = 'ごまちゃん家計簿アルバム';
+const ALBUM_FOLDER_NOTE =
+  'アルバムの写真を置く、Google ドライブのフォルダです(自動で入ります)。書きかえないでください。' +
+  'フォルダを完全に消してしまったときだけ、この値を空にしてメニュー⑥を実行すると、新しく作り直します';
+
+/** 写真1枚の大きさの上限(JPEG にした中身のバイト数)。アプリは 300KB ほどに縮めてから送る */
+const MAX_PHOTO_BYTES = 1500000;
+/** アルバムに置ける写真の数(有効なもの)の上限 */
+const MAX_PHOTOS = 300;
 
 /** 変動費のカテゴリ(初期値。あとは `設定` シートの E列で増減する) */
 const DEFAULT_CATEGORIES = ['食費', '生活必需品', '交際費', '交通費', '病院', '衣類', '雑貨', '美容系', '娯楽費', 'ごまちゃん'];
@@ -182,6 +210,9 @@ const HANDLERS = {
   addMonthlyItem: { fn: handleAddMonthlyItem_, lock: true },
   updateMonthlyItem: { fn: handleUpdateMonthlyItem_, lock: true },
   closeMonth: { fn: handleCloseMonth_, lock: true },
+  addPhoto: { fn: handleAddPhoto_, lock: true },
+  getPhoto: { fn: handleGetPhoto_, lock: false },
+  removePhoto: { fn: handleRemovePhoto_, lock: true },
 };
 
 // ============================================================================
@@ -198,6 +229,8 @@ function onOpen() {
     .addSeparator()
     .addItem('④ フォームの回答を取り込む', 'importFormResponses')
     .addItem('⑤ 月ごとの集計を見る(確認用)', 'showMonthlySummary')
+    .addSeparator()
+    .addItem('⑥ アルバムの準備(ドライブの許可)', 'setupAlbum')
     .addToUi();
 }
 
@@ -521,9 +554,11 @@ function doGet() {
  * 応答は JSON。
  *   成功: { "ok": true, … }
  *   失敗: { "ok": false, "error": "auth" | "locked" | "setup" | "bad_request" | "unknown_action"
- *                                  | "invalid" | "forbidden" | "busy" | "server" }
+ *                                  | "invalid" | "forbidden" | "busy" | "server"
+ *                                  | "not_found" | "drive"(この2つは写真だけ) }
  * action: login / sync / addRecord / updateRecord / deleteRecord
  *         / addMonthlyItem / updateMonthlyItem / closeMonth(毎月の設定)
+ *         / addPhoto / getPhoto / removePhoto(アルバム)
  */
 function doPost(e) {
   let result;
@@ -679,7 +714,7 @@ function handleLogin_(ctx) {
 
 /**
  * sync: 起動時にまとめて取る。誰の iPhone か、カテゴリ一覧、削除されていない記録の全件、
- * 毎月の項目(monthlyItems)と、月の確定の一覧(monthlyClosed)。
+ * 毎月の項目(monthlyItems)と、月の確定の一覧(monthlyClosed)、アルバムの写真の一覧(photos)。
  * 相手の財布の分も返す(絞り込みは画面側。仕様書 3章)。
  */
 function handleSync_(ctx) {
@@ -700,6 +735,7 @@ function syncPayload_(ctx) {
   }
   const itemsTable = openMonthlyItems_();
   const closedTable = openMonthlyClosed_();
+  const photosTable = openPhotos_();
   return {
     ok: true,
     user: ctx.user,
@@ -707,6 +743,8 @@ function syncPayload_(ctx) {
     records: listRecords_(table),
     monthlyItems: itemsTable ? readMonthlyItems_(itemsTable).map(publicMonthlyItem_) : [],
     monthlyClosed: closedTable ? listMonthlyClosed_(closedTable) : [],
+    // アルバムの写真の一覧(有効なものだけ。中身は getPhoto で1枚ずつ取る)
+    photos: photosTable ? listPhotos_(photosTable) : [],
   };
 }
 
@@ -2326,6 +2364,339 @@ function buildSummaryText_() {
     );
   });
   return lines.join('\n');
+}
+
+// ============================================================================
+// ごまちゃんアルバム(写真)
+// ============================================================================
+//
+// ドライブで触るのは、このスクリプトが作ったアルバムのフォルダと、その中の写真だけ。
+//   - フォルダは ID(`設定` シートに保存したもの)でだけ開く。名前で探さない。
+//   - 写真は、`写真` シートにあるファイルIDでだけ開き、アルバムのフォルダの中にあることを確かめてから扱う。
+//   - 共有設定は変えない。外すときはゴミ箱へ入れるだけ。
+
+/** ⑥ アルバムの準備: 写真置き場のフォルダを、無ければ作る(はじめて実行すると、ドライブの許可の画面が出る) */
+function setupAlbum() {
+  const settings = readSettings_();
+  if (!settings) {
+    notify_('`設定` シートがありません。先にメニューの ①(初期設定)を実行してください。');
+    return;
+  }
+  let folder;
+  let created = false;
+  try {
+    withLock_(function () {
+      const before = settings.map[SETTING_KEY.ALBUM_FOLDER] || '';
+      folder = ensureAlbumFolder_(settings);
+      created = folder.getId() !== before;
+    });
+  } catch (err) {
+    if (err && err.name === 'BusyError') {
+      throw err;
+    }
+    console.error('アルバムの準備でエラー: ' + (err && err.message ? err.message : err));
+    notify_(
+      [
+        'アルバムのフォルダを開けませんでした。',
+        '',
+        '少し待ってから、もういちど ⑥ を実行してみてください。',
+        'フォルダを完全に消してしまった場合は、`設定` シートの「' + SETTING_KEY.ALBUM_FOLDER + '」の値(B列)を空にしてから、',
+        'もういちど ⑥ を実行すると、新しいフォルダを作ります(前の写真は、アプリに出なくなります)。',
+      ].join('\n')
+    );
+    return;
+  }
+  notify_(
+    [
+      created ? 'アルバムの写真置き場を作りました。' : 'アルバムの写真置き場は、もう準備できています。',
+      '',
+      'フォルダ名: ' + folder.getName() + '(マイドライブの中。だれとも共有していません)',
+      '',
+      'このフォルダと中の写真は、ドライブの画面で動かしたり消したりしないでください(アプリに出なくなります)。',
+      '写真の追加と削除は、アプリの「ごまちゃんアルバム」から行います。',
+      '',
+      'つぎに、Apps Script の「デプロイ」→「デプロイを管理」→ 鉛筆 → バージョン「新バージョン」→「デプロイ」をしてください。',
+    ].join('\n')
+  );
+}
+
+function openPhotos_() {
+  return openTable_(SHEET.PHOTOS, HEADERS.PHOTOS);
+}
+
+/**
+ * `写真` シートを読む(id が空の行は飛ばす)。
+ * @return {Object[]} { id, fileId, addedBy, addedAt, active, rowNo }
+ */
+function readPhotos_(table) {
+  const col = table.col;
+  const tz = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone() || TZ;
+  const list = [];
+  for (let r = 1; r < table.values.length; r++) {
+    const row = table.values[r];
+    const id = String(row[col['id']]).trim();
+    if (!id) {
+      continue;
+    }
+    list.push({
+      id: id,
+      fileId: String(row[col['ドライブのファイルID']]).trim(),
+      addedBy: String(row[col['足した人']]).trim(),
+      addedAt: toDateTimeString_(row[col['追加日時']], tz),
+      active: toBool_(row[col['有効']]),
+      rowNo: r + 1,
+    });
+  }
+  return list;
+}
+
+/** 有効な写真の一覧(アプリに返す形。ドライブのファイルIDは返さない) */
+function listPhotos_(table) {
+  return readPhotos_(table)
+    .filter(function (photo) {
+      return photo.active && photo.fileId !== '';
+    })
+    .map(function (photo) {
+      return { 'id': photo.id, '足した人': photo.addedBy, '追加日時': photo.addedAt };
+    });
+}
+
+function findPhoto_(photos, id) {
+  for (let i = 0; i < photos.length; i++) {
+    if (photos[i].id === id) {
+      return photos[i];
+    }
+  }
+  return null;
+}
+
+/**
+ * アルバムのフォルダを返す。まだ無ければ(ID が未保存か、フォルダがゴミ箱にあれば)作って、ID を `設定` シートに保存する。
+ * 保存してある ID のフォルダが開けないときは、作り直さずにエラーにする
+ * (ドライブの一時的な不調で、別のフォルダを作ってしまわないように。作り直す手順は ALBUM_FOLDER_NOTE)。
+ * 新しいフォルダは、作った人(このスクリプトの持ち主)だけが見られる。共有設定は変えない。
+ */
+function ensureAlbumFolder_(settings) {
+  const savedId = settings.map[SETTING_KEY.ALBUM_FOLDER] || '';
+  if (savedId) {
+    const saved = DriveApp.getFolderById(savedId); // 開けなければ、ここで例外
+    if (!saved.isTrashed()) {
+      return saved;
+    }
+  }
+  const folder = DriveApp.createFolder(ALBUM_FOLDER_NAME);
+  writeSetting_(settings, SETTING_KEY.ALBUM_FOLDER, folder.getId(), ALBUM_FOLDER_NOTE);
+  SpreadsheetApp.flush();
+  return folder;
+}
+
+/** そのファイルが、アルバムのフォルダの直下にあるか */
+function isInAlbumFolder_(file, folderId) {
+  const parents = file.getParents();
+  while (parents.hasNext()) {
+    if (parents.next().getId() === folderId) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * `写真` シートの1行から、ドライブのファイルを開く。
+ * アルバムのフォルダの中にあり、ゴミ箱に入っていないものだけを返す(それ以外は null)。
+ * ファイルIDは `写真` シートにあるものしか渡さないこと。
+ */
+function openAlbumFile_(settings, photo) {
+  const folderId = settings.map[SETTING_KEY.ALBUM_FOLDER] || '';
+  if (!folderId || !photo.fileId) {
+    return null;
+  }
+  let file;
+  try {
+    file = DriveApp.getFileById(photo.fileId);
+  } catch (err) {
+    return null; // 消されている・開けない
+  }
+  if (file.isTrashed() || !isInAlbumFolder_(file, folderId)) {
+    return null;
+  }
+  return file;
+}
+
+/** 写真の中身(base64 の文字)を、バイト列にする。JPEG でない・大きすぎる・読めないときは、理由の文字を返す */
+function decodePhoto_(data) {
+  if (typeof data !== 'string' || data === '') {
+    return 'empty';
+  }
+  // base64 は、もとの 4/3 倍の長さになる。ほどく前に、長さでふるいにかける
+  if (data.length > Math.ceil(MAX_PHOTO_BYTES / 3) * 4 + 4) {
+    return 'too_large';
+  }
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(data)) {
+    return 'format';
+  }
+  let bytes;
+  try {
+    bytes = Utilities.base64Decode(data);
+  } catch (err) {
+    return 'format';
+  }
+  if (bytes.length > MAX_PHOTO_BYTES) {
+    return 'too_large';
+  }
+  // JPEG は FF D8 FF で始まる
+  if (bytes.length < 4 || (bytes[0] & 0xff) !== 0xff || (bytes[1] & 0xff) !== 0xd8 || (bytes[2] & 0xff) !== 0xff) {
+    return 'not_jpeg';
+  }
+  return bytes;
+}
+
+/**
+ * addPhoto: アルバムに写真を1枚足す。
+ *   リクエスト: { id(端末で作る), データ(JPEG を base64 にした文字) }
+ *   同じ id がすでにあれば、足さずに成功を返す(送り直しで二重にならない。外した写真は、送り直しても戻らない)。
+ *   応答: { ok, id, duplicate, 足した人, 追加日時 }
+ *   だめなとき: invalid(field: id / データ。reason: empty / too_large / format / not_jpeg / full)、drive(ドライブに置けなかった)
+ */
+function handleAddPhoto_(ctx) {
+  const id = ctx.req.id;
+  if (!isValidId_(id)) {
+    return { ok: false, error: 'invalid', field: 'id' };
+  }
+  const bytes = decodePhoto_(ctx.req['データ']);
+  if (typeof bytes === 'string') {
+    return { ok: false, error: 'invalid', field: 'データ', reason: bytes };
+  }
+
+  const table = openPhotos_();
+  if (!table) {
+    return { ok: false, error: 'setup' };
+  }
+  const photos = readPhotos_(table);
+  const existing = findPhoto_(photos, id);
+  if (existing) {
+    return { ok: true, id: id, duplicate: true, '足した人': existing.addedBy, '追加日時': existing.addedAt };
+  }
+  const activeCount = photos.filter(function (photo) {
+    return photo.active;
+  }).length;
+  if (activeCount >= MAX_PHOTOS) {
+    return { ok: false, error: 'invalid', field: 'データ', reason: 'full' };
+  }
+
+  let file;
+  try {
+    const folder = ensureAlbumFolder_(ctx.settings);
+    file = folder.createFile(Utilities.newBlob(bytes, 'image/jpeg', id + '.jpg'));
+  } catch (err) {
+    console.error('写真をドライブに置けませんでした: ' + (err && err.message ? err.message : err));
+    return { ok: false, error: 'drive' };
+  }
+
+  const addedAt = Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd HH:mm:ss');
+  try {
+    appendPhotoRow_(table, { id: id, fileId: file.getId(), addedBy: ctx.user, addedAt: addedAt });
+  } catch (err) {
+    // シートに書けなかったら、いま置いたファイルはゴミ箱へ(だれにも見えない写真を残さない)
+    try {
+      file.setTrashed(true);
+    } catch (err2) {
+      /* 何もしない */
+    }
+    throw err;
+  }
+  return { ok: true, id: id, duplicate: false, '足した人': ctx.user, '追加日時': addedAt };
+}
+
+/** `写真` シートのいちばん下に1行足す(id・ファイルID・足した人・追加日時は文字のまま、有効は TRUE) */
+function appendPhotoRow_(table, photo) {
+  const sheet = table.sheet;
+  const col = table.col;
+  const rowNo = Math.max(sheet.getLastRow(), 1) + 1;
+  if (rowNo > sheet.getMaxRows()) {
+    sheet.insertRowsAfter(sheet.getMaxRows(), 50);
+  }
+  const cells = [
+    ['id', photo.id],
+    ['ドライブのファイルID', photo.fileId],
+    ['足した人', photo.addedBy],
+    ['追加日時', photo.addedAt],
+  ];
+  cells.forEach(function (cell) {
+    sheet.getRange(rowNo, col[cell[0]] + 1).setNumberFormat('@').setValue(cell[1]);
+  });
+  sheet.getRange(rowNo, col['有効'] + 1).setValue(true);
+}
+
+/**
+ * getPhoto: 写真を1枚取る。
+ *   リクエスト: { id }
+ *   応答: { ok, id, データ(JPEG を base64 にした文字) }
+ *   返すのは、`写真` シートで有効で、アルバムのフォルダの中にあるものだけ。それ以外は not_found。
+ */
+function handleGetPhoto_(ctx) {
+  const id = ctx.req.id;
+  if (!isValidId_(id)) {
+    return { ok: false, error: 'invalid', field: 'id' };
+  }
+  const table = openPhotos_();
+  if (!table) {
+    return { ok: false, error: 'setup' };
+  }
+  const photo = findPhoto_(readPhotos_(table), id);
+  if (!photo || !photo.active) {
+    return { ok: false, error: 'not_found', id: id };
+  }
+  let data;
+  try {
+    const file = openAlbumFile_(ctx.settings, photo);
+    if (!file || file.getSize() > MAX_PHOTO_BYTES) {
+      return { ok: false, error: 'not_found', id: id };
+    }
+    data = Utilities.base64Encode(file.getBlob().getBytes());
+  } catch (err) {
+    console.error('写真をドライブから読めませんでした: ' + (err && err.message ? err.message : err));
+    return { ok: false, error: 'drive' };
+  }
+  return { ok: true, id: id, 'データ': data };
+}
+
+/**
+ * removePhoto: 写真をアルバムから外す(2人のどちらでも外せる)。
+ *   リクエスト: { id }
+ *   `写真` シートの「有効」を FALSE にし、ドライブのファイルはゴミ箱へ入れる(完全には消さない)。
+ *   見つからない・すでに外してあるときも成功を返す(送り直しても安全)。
+ *   応答: { ok, id, found, trashed }
+ */
+function handleRemovePhoto_(ctx) {
+  const id = ctx.req.id;
+  if (!isValidId_(id)) {
+    return { ok: false, error: 'invalid', field: 'id' };
+  }
+  const table = openPhotos_();
+  if (!table) {
+    return { ok: false, error: 'setup' };
+  }
+  const photo = findPhoto_(readPhotos_(table), id);
+  if (!photo) {
+    return { ok: true, id: id, found: false, trashed: false };
+  }
+  if (photo.active) {
+    table.sheet.getRange(photo.rowNo, table.col['有効'] + 1).setValue(false);
+  }
+  // ファイルは、アルバムのフォルダの中にあるときだけ、ゴミ箱へ(すでにゴミ箱なら、何もしない)
+  let trashed = false;
+  try {
+    const file = openAlbumFile_(ctx.settings, photo);
+    if (file) {
+      file.setTrashed(true);
+      trashed = true;
+    }
+  } catch (err) {
+    // シートでは外れているので、アプリには出なくなる。ファイルは、ドライブに残るだけ
+    console.error('写真をゴミ箱へ入れられませんでした: ' + (err && err.message ? err.message : err));
+  }
+  return { ok: true, id: id, found: true, trashed: trashed };
 }
 
 // ============================================================================

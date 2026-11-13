@@ -1,12 +1,14 @@
 // ごまちゃん家計簿 画面の入口。
-//   - どの画面を出すかを決める(入力 / 見る / 毎月の設定 / 合言葉)
+//   - どの画面を出すかを決める(入力 / 見る / 毎月の設定 / アルバム / 合言葉)
 //   - 合言葉の登録
 //   - 裏での同期(最新データの取得)と、未送信キューを送り直す合図
 //   - Service Worker の登録
 
 import { ApiError, isConfigured, login, sync } from "./api.js";
+import { initAlbum, refreshAlbum, showAlbum } from "./album.js";
 import { APP_VERSION } from "./config.js";
 import { initInput, onHide, onResume, refreshData, showInput } from "./input.js";
+import * as photos from "./photos.js";
 import * as queue from "./queue.js";
 import * as store from "./store.js";
 import { initMonthly, refreshMonthly, setMonthlyMonth, setMonthlySyncState, showMonthly } from "./monthly.js";
@@ -20,6 +22,7 @@ const el = {
     view: document.getElementById("view-view"),
     login: document.getElementById("view-login"),
     monthly: document.getElementById("view-monthly"),
+    album: document.getElementById("view-album"),
   },
   status: document.getElementById("connect-status"),
   form: document.getElementById("login-form"),
@@ -40,6 +43,7 @@ const LOGIN_PROMPT = "";
 /** 画面に戻ってきたとき、前回の同期からこの時間がたっていたら取り直す */
 const SYNC_INTERVAL_MS = 5 * 60 * 1000;
 
+/** いま開いている画面: "input" | "view" | "monthly"(ここまでは下のタブ) | "album"(入力画面のカメラボタンから) */
 let currentTab = "input";
 let lastSyncAt = 0;
 let syncing = false;
@@ -61,6 +65,8 @@ function render() {
     renderAbout();
   } else if (currentTab === "view") {
     name = "view";
+  } else if (currentTab === "album") {
+    name = "album";
   } else {
     name = "input";
     showInput();
@@ -75,6 +81,8 @@ function render() {
     showView();
   } else if (name === "monthly") {
     showMonthly();
+  } else if (name === "album") {
+    showAlbum();
   }
 }
 
@@ -87,6 +95,14 @@ function renderAbout() {
       queue.needsUpdate()
         ? `まだ送れていない記録が ${pending}件あります(保存先の更新が必要なものがあります)。`
         : `まだ送れていない記録が ${pending}件あります(自動で送り直します)。`
+    );
+  }
+  const pendingPhotos = photos.pendingCount();
+  if (pendingPhotos > 0) {
+    lines.push(
+      photos.needsUpdate()
+        ? `まだ送れていない写真が ${pendingPhotos}枚あります(保存先の更新が必要です)。`
+        : `まだ送れていない写真が ${pendingPhotos}枚あります(自動で送り直します)。`
     );
   }
   lines.push(`版 ${APP_VERSION}`);
@@ -172,6 +188,7 @@ async function submitAikotoba(event) {
     selectTab("input");
     // 裏で: 前に送れなかった記録を送り、最新のデータを取る
     queue.flush();
+    photos.flush();
     syncNow();
   } catch (err) {
     setStatus(messageFor(err), "warn");
@@ -272,6 +289,12 @@ function applyServerData(result) {
   if (ready) {
     store.setMonthlyData(result.monthlyItems, result.monthlyClosed);
   }
+  // アルバムの写真の一覧。入っていなければ、保存先(GAS)が古い版(アルバムは、更新されるまで使えない)。
+  // 一覧から消えた写真は端末からも消し、送れずに待っていた写真があれば送る(photos.js。中身は、必要になったときに取る)
+  photos
+    .applyServerList(result.photos)
+    .then(refreshAlbum)
+    .catch((err) => console.error(err));
   return true;
 }
 
@@ -279,6 +302,7 @@ function applyServerData(result) {
 function wake() {
   if (!isConfigured() || !isLoggedIn()) return;
   queue.flush();
+  photos.flush();
   if (Date.now() - lastSyncAt > SYNC_INTERVAL_MS) {
     syncNow();
   }
@@ -320,7 +344,18 @@ function registerServiceWorker() {
 // 入れ替わりしだい読み込み直して、新しい画面にそろうように
 registerServiceWorker();
 
-initInput();
+photos.initPhotos();
+initInput({
+  // 写真の右上のカメラボタン: アルバムを開く
+  openAlbum() {
+    selectTab("album");
+  },
+});
+initAlbum({
+  back() {
+    selectTab("input");
+  },
+});
 initView({
   // 明細の、確定した固定費などを押したとき: 「毎月の設定」を、その月で開く
   openMonthly(month) {
@@ -363,6 +398,18 @@ queue.subscribe((event) => {
   }
 });
 
+photos.subscribe((event) => {
+  if (event.type === "error" && event.code === "auth") {
+    handleAuthLost();
+  } else if (event.type === "sent" && syncing) {
+    // 取りに行っているあいだに写真が送れた → 取り直す(古い一覧で上書きしないように)
+    resyncNeeded = true;
+  }
+  if (event.type === "change" && currentTab === "monthly" && isLoggedIn()) {
+    renderAbout();
+  }
+});
+
 window.addEventListener("online", wake);
 window.addEventListener("pageshow", (event) => {
   if (event.persisted) wake();
@@ -387,5 +434,6 @@ if (!isConfigured()) {
 render();
 if (isConfigured() && isLoggedIn()) {
   queue.flush();
+  photos.flush();
   syncNow();
 }

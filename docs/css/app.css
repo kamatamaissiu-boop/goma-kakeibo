@@ -337,9 +337,22 @@ p {
   white-space: pre-line;
 }
 
+/* 画面には出さず、読み上げにだけ伝える文字 */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* --- 入力画面(寸法は見本 HTML 1〜3 のとおり) ------------------------------ */
 
-/* 写真の枠: 高さ 132px。段階4で写真(.photo__img)に差し替える。いまは仮の絵 */
+/* 写真の枠: 高さ 132px。アルバムの写真(.photo__img)を、枠いっぱいに出す。写真が1枚もないあいだは仮の絵 */
 .photo {
   position: relative;
   flex-shrink: 0;
@@ -368,6 +381,41 @@ p {
 
 .photo[data-state="photo"] .photo__goma {
   display: none;
+}
+
+/* 写真の枠の写真は、長押ししても iPhone のメニュー(画像を保存など)を出さない・えらべない・つかめない */
+.photo__img,
+.joint__photo-img,
+.mhead__photo-img,
+.tile__img,
+.dialog__photo {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-user-drag: none;
+  pointer-events: none;
+}
+
+/* カメラボタン(アルバムへ)。写真の右上に、白いまる(44px) */
+.photo__camera {
+  position: absolute;
+  right: calc(var(--safe-right) + 12px);
+  top: calc(var(--safe-top) + 12px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: none;
+  border-radius: 22px;
+  background: var(--c-white);
+  color: var(--c-ink);
+  cursor: pointer;
+}
+
+.photo__camera:active {
+  opacity: 0.85;
 }
 
 /* 未送信の件数(あるときだけ、写真の左上に小さく) */
@@ -855,7 +903,7 @@ p {
   gap: 12px;
 }
 
-/* 写真の枠(92px 角)。段階4で写真に差し替える。いまは仮の絵 */
+/* 写真の枠(92px 角)。アルバムの写真を、枠いっぱいに出す。写真が1枚もないあいだは仮の絵 */
 .joint__photo {
   position: relative;
   flex-shrink: 0;
@@ -1933,6 +1981,289 @@ button.row:active {
   border-color: var(--c-ink);
   background: var(--c-ink);
   color: var(--c-white);
+}
+
+/* --- 見る: 今週の肉球スタンプ(寸法は見本 HTML 4 のとおり) ------------------ */
+
+.view--look .stamps {
+  gap: 8px;
+}
+
+.stamps__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.stamps__note {
+  font-size: 12px;
+  color: var(--c-gray);
+}
+
+.stamps__days {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.stamp {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+/* まる(36px)。まだ押されていない日は、点線のわく */
+.stamp__mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 1.5px dashed #CFC4B6;
+  border-radius: 18px;
+  color: var(--c-amber-dark);
+}
+
+/* きろくした日: 琥珀(薄)の地に、肉球 */
+.stamp[data-on] .stamp__mark {
+  border: 1.5px solid var(--c-amber-light);
+  background: var(--c-amber-light);
+}
+
+.stamp__day {
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--c-gray);
+}
+
+/* きょう: 曜日を太く・濃く */
+.stamp[data-today] .stamp__day {
+  font-weight: 700;
+  color: var(--c-ink);
+}
+
+/* --- ごまちゃんアルバム(寸法は見本 HTML 6 のとおり) ------------------------ */
+
+.view--album {
+  gap: 12px;
+  padding: calc(var(--safe-top) + 14px) calc(var(--safe-right) + var(--gutter)) 12px calc(var(--safe-left) + var(--gutter));
+}
+
+.album__head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  height: 44px;
+  margin-left: -10px;
+}
+
+.album__title {
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.album__lead {
+  font-size: 14px;
+  line-height: 1.6;
+  color: #5E574F;
+}
+
+.album__notice {
+  white-space: pre-line;
+}
+
+.album__status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.album__status[data-warn] {
+  color: var(--c-pink-dark);
+}
+
+.album__status .btn-text {
+  flex-shrink: 0;
+  margin: -10px -14px -10px 0;
+  color: inherit;
+}
+
+.album__grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+/* 「写真を足す」: 点線のわくの、白い四角 */
+.album__add {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  border: 1.5px dashed var(--c-silver-dark);
+  border-radius: var(--r-control);
+  background: var(--c-white);
+  color: var(--c-ink);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.album__add:active {
+  opacity: 0.85;
+}
+
+.album__add:focus-within {
+  outline: 2px solid var(--c-ink);
+  outline-offset: 2px;
+}
+
+.album__add[data-disabled] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* 透明なファイル選択を、ボタンいっぱいに重ねる(押すと、端末の写真えらびが開く) */
+.album__file {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.album__file:disabled {
+  cursor: default;
+}
+
+/* 写真のタイル。長押しで外すので、iPhone の長押しメニュー・文字えらび・拡大鏡を出さない */
+.tile {
+  position: relative;
+  display: block;
+  aspect-ratio: 1 / 1;
+  padding: 0;
+  overflow: hidden;
+  border: none;
+  border-radius: var(--r-control);
+  background: var(--c-amber-light);
+  color: var(--c-amber-dark);
+  cursor: pointer;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.tile:focus-visible {
+  outline: 2px solid var(--c-ink);
+  outline-offset: 2px;
+}
+
+.tile__img {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* まだ届いていない写真の場所に出す肉球(届いたら、写真の下にかくれる) */
+.tile__paw {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  opacity: 0.55;
+}
+
+.tile[data-loading] .tile__paw {
+  animation: tile-wait 1.4s ease-in-out infinite;
+}
+
+@keyframes tile-wait {
+  50% {
+    opacity: 0.2;
+  }
+}
+
+/* 送信中・送信待ち・送れていません */
+.tile__badge {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 6px;
+  padding: 2px 4px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--c-gray);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.5;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tile[data-state="failed"] .tile__badge {
+  color: var(--c-pink-dark);
+}
+
+/* 送り終わるまでは、少しうすく */
+.tile[data-state="sending"] .tile__img,
+.tile[data-state="waiting"] .tile__img,
+.tile[data-state="failed"] .tile__img {
+  opacity: 0.7;
+}
+
+.album__hint {
+  font-size: 13px;
+  color: var(--c-gray);
+}
+
+.album__hint[data-empty] {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--c-ink);
+}
+
+/* 「右クリックでも」は、マウスで使う画面(パソコン)にだけ出す */
+.album__hint--pc {
+  display: none;
+  margin-top: -8px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .album__hint--pc {
+    display: block;
+  }
+}
+
+/* 外す確認のダイアログに出す、その写真 */
+.dialog__photo {
+  display: block;
+  width: 120px;
+  height: 120px;
+  margin: 4px auto;
+  border-radius: var(--r-control);
+  object-fit: cover;
 }
 
 /* --- 下のタブ(猫耳タブ) ------------------------------------------------- */

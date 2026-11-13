@@ -10,11 +10,13 @@
 //      ・殻が動きだしたあと、画面からの合図で、裏でまとめて保存する。合図の前に画面に出た絵も、その場で保存する。
 //      ・保存してあれば、通信せずにそれを返す(絵は版が上がっても使い回す)。
 //        絵のファイルを差し替えたときは、ART_CACHE の番号を上げる(古い絵が消えて、取り直される)。
+//  - アルバムの写真は、ここでは扱わない(画面の側が IndexedDB に保存する。js/photos.js)。
+//    殻とも絵とも別の場所なので、版が上がっても・絵を差し替えても、消えない。
 //  - 保存先(Google Apps Script)との通信は一切さわらない・保存しない。
 //
 // 画面のファイルを直したら APP_VERSION を上げる(古い保存分が消えて入れ替わる)。
 
-const APP_VERSION = "0.5.0";
+const APP_VERSION = "0.6.0";
 const SHELL_CACHE = `goma-kakeibo-shell-v${APP_VERSION}`;
 const SHELL_PREFIX = "goma-kakeibo-shell-";
 const FONT_CACHE = "goma-kakeibo-fonts-v1"; // フォントは版が変わっても使い回す
@@ -40,6 +42,8 @@ const SHELL_FILES = [
   "js/summary.js",
   "js/view.js",
   "js/monthly.js",
+  "js/photos.js",
+  "js/album.js",
   "icons/icon-192.png",
   "icons/icon-512.png",
   "icons/apple-touch-icon.png",
