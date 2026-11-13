@@ -217,6 +217,7 @@
                 <div class="label">支出</div>
                 <div class="joint__num" id="joint-spend"></div>
                 <div class="joint__sub" id="joint-spend-rate"></div>
+                <div class="joint__sub" id="joint-spend-fixed" hidden></div>
               </div>
             </div>
             <button class="card__more" type="button" data-details="joint">共同口座の明細を見る</button>
@@ -224,7 +225,8 @@
 
           <!-- (段階4)「今週の肉球スタンプ」のカードは、ここに足す -->
 
-          <!-- 自分の財布のカード: 合計、カテゴリ別の横棒(変動費)、特別費は1行ずつ -->
+          <!-- 自分の財布のカード: 合計、カテゴリ別の横棒(変動費)、特別費は1行ずつ。
+               その下に、固定費(合計に入れる)・貯蓄・共同口座へ入金・収入(合計に入れない)を1行ずつ -->
           <section class="card wallet" aria-labelledby="wallet-title">
             <div class="wallet__head">
               <h2 class="card__title" id="wallet-title"></h2>
@@ -233,6 +235,7 @@
             <p class="wallet__none" id="wallet-none" hidden>この月は、まだ使っていないにゃ。</p>
             <div class="bars" id="wallet-bars"></div>
             <div class="specials" id="wallet-specials"></div>
+            <div class="extras" id="wallet-extras" hidden></div>
             <div class="wallet__deposit" id="wallet-deposit" hidden>
               <span>共同口座へ入金<span class="wallet__deposit-note">（合計には入れていません）</span></span>
               <span class="wallet__deposit-amount" id="wallet-deposit-amount"></span>
@@ -240,7 +243,16 @@
             <button class="card__more" type="button" data-details="self" id="wallet-more"></button>
           </section>
 
-          <!-- (段階3)「来月、共同口座に入れる目安」のカードは、ここに足す -->
+          <!-- 来月、共同口座に入れる目安(今月を見ているときだけ出す)。計算の決まりは summary.js の estimateNextDeposit -->
+          <section class="card card--cream estimate" id="estimate" aria-labelledby="estimate-title" hidden>
+            <h2 class="estimate__title" id="estimate-title">来月、共同口座に入れる目安</h2>
+            <div class="estimate__nums" id="estimate-nums"></div>
+            <p class="estimate__formula" id="estimate-formula"></p>
+            <details class="estimate__more">
+              <summary>計算のうちわけ</summary>
+              <ul class="estimate__list" id="estimate-list"></ul>
+            </details>
+          </section>
 
           <!-- 明細: その月の、自分の財布と共同口座の記録。行を押すと、なおす・消す -->
           <section class="card details" id="details" aria-labelledby="details-title">
@@ -352,20 +364,82 @@
       </div>
     </section>
 
-    <!-- ===== 準備中の画面(「毎月の設定」) ===== -->
-    <section class="view view--plain" id="view-soon" aria-labelledby="soon-title" hidden>
-      <div class="hero">
-        <h1 class="hero__title" id="soon-title"></h1>
-        <img class="hero__goma" src="img/goma-round.svg" alt="ごまちゃん" width="168" height="160">
-        <p class="bubble">
-          <svg class="bubble__paw" aria-hidden="true" width="18" height="18" fill="currentColor"><use href="#i-paw"></use></svg>
-          <span>準備中にゃ。</span>
-        </p>
-        <p class="hero__note">この画面は、もうすこしで使えるようになります</p>
+    <!-- ===== 毎月の設定(仕様書 4.3) ===== -->
+    <section class="view view--monthly" id="view-monthly" aria-label="毎月の設定" hidden>
+
+      <!-- 見出し。写真は段階4でアルバムの写真に差し替える: #monthly-photo-img の src に入れて hidden を外し、
+           #monthly-photo の data-state を "photo" にする。いまは仮の絵 -->
+      <div class="mhead">
+        <div class="mhead__photo" id="monthly-photo" data-state="placeholder">
+          <img class="mhead__photo-img" id="monthly-photo-img" alt="" hidden>
+          <img class="mhead__goma" src="img/goma-round.svg" alt="" aria-hidden="true" width="54" height="51">
+        </div>
+        <div class="mhead__text">
+          <h1 class="mhead__title">毎月の設定</h1>
+          <p class="mhead__sub">月に1回だけ。あとは寝てても記録されるにゃ</p>
+        </div>
       </div>
 
-      <div class="card card--cream connect">
-        <p class="connect__status" id="soon-status"></p>
+      <!-- 月の切り替え(来月まで) -->
+      <div class="month">
+        <button class="month__btn" id="monthly-prev" type="button" aria-label="前の月">
+          <svg aria-hidden="true" width="24" height="24"><use href="#i-prev"></use></svg>
+        </button>
+        <div class="month__title" id="monthly-title"></div>
+        <button class="month__btn" id="monthly-next" type="button" aria-label="次の月">
+          <svg aria-hidden="true" width="24" height="24"><use href="#i-next"></use></svg>
+        </button>
+      </div>
+
+      <!-- 「確定したにゃ」などの一言(あるときだけ) -->
+      <p class="look__notice" id="monthly-notice" role="status" aria-live="polite" hidden></p>
+
+      <!-- 読み込み前・保存先(GAS)が古い版のとき -->
+      <div class="card look-empty" id="monthly-wait" hidden>
+        <img class="look-empty__goma" src="img/goma-round.svg" alt="ごまちゃん" width="105" height="100">
+        <p class="look-empty__text" id="monthly-wait-text"></p>
+        <p class="hint" id="monthly-wait-note" hidden></p>
+      </div>
+
+      <div class="monthly" id="monthly-body">
+
+        <!-- 収入(手取り)と、税金・社会保険(任意。たたんである)。行は JS が作る -->
+        <section class="card mcard" aria-labelledby="monthly-income-title">
+          <div class="mcard__head">
+            <h2 class="label" id="monthly-income-title"></h2>
+            <button class="mcard__link" type="button" data-add="self-income">追加</button>
+          </div>
+          <div class="mrows" id="monthly-income"></div>
+          <button class="mcard__toggle" id="monthly-tax-toggle" type="button" aria-expanded="false" aria-controls="monthly-tax-box">税金・社会保険も入れる</button>
+          <div class="mcard__tax" id="monthly-tax-box" hidden>
+            <p class="mcard__hint">入れなくてもだいじょうぶ。給与明細を見て、わかるものだけ。</p>
+            <div class="mrows" id="monthly-tax"></div>
+            <button class="mcard__link mcard__link--end" type="button" data-add="self-tax">項目を追加</button>
+          </div>
+        </section>
+
+        <!-- 固定費と貯蓄。カードの上から、のぞきごま -->
+        <section class="card mcard mcard--peek" aria-labelledby="monthly-fixed-title">
+          <img class="mcard__peek" src="img/goma-peek.svg" alt="" aria-hidden="true" width="70" height="38">
+          <div class="mcard__head">
+            <h2 class="card__title" id="monthly-fixed-title">固定費と貯蓄</h2>
+            <button class="mcard__link" type="button" data-add="joint-fixed">追加</button>
+          </div>
+          <p class="mcard__hint">なまえを押すと、項目をなおせます（毎月の金額・停止）</p>
+          <div class="mrows" id="monthly-fixed"></div>
+        </section>
+
+        <p class="monthly__status" id="monthly-status" role="status"></p>
+
+        <button class="btn btn--primary" id="monthly-submit" type="button">
+          <svg class="btn__paw" aria-hidden="true" width="20" height="20" fill="currentColor"><use href="#i-paw"></use></svg>
+          <span id="monthly-submit-text">確定する</span>
+        </button>
+      </div>
+
+      <!-- この iPhone のこと(登録・版) -->
+      <div class="card card--cream connect about">
+        <p class="connect__status about__status" id="about-status"></p>
         <button class="btn-text" id="forget-button" type="button" hidden>この iPhone の登録をやり直す</button>
       </div>
     </section>
@@ -384,7 +458,53 @@
     </div>
   </div>
 
-  <!-- 下のタブ(「毎月の設定」は準備中の画面を出す) -->
+  <!-- 毎月の項目の追加・変更(「毎月の設定」の「追加」や、項目のなまえを押すと出る) -->
+  <div class="dialog-backdrop dialog-backdrop--top" id="item-dialog" hidden>
+    <form class="dialog dialog--form" id="item-form" role="dialog" aria-modal="true" aria-labelledby="item-title" novalidate autocomplete="off">
+      <p class="dialog__title" id="item-title">項目を追加</p>
+      <p class="dialog__what" id="item-group-text" hidden></p>
+
+      <div class="field" id="item-field-group">
+        <div class="label" id="item-group-label">どこに足す？</div>
+        <div class="choices choices--2" id="item-groups" role="group" aria-labelledby="item-group-label"></div>
+      </div>
+
+      <div class="field">
+        <label class="label" for="item-name">なまえ</label>
+        <input class="input" id="item-name" name="item-name" type="text" maxlength="30" enterkeyhint="done"
+               autocomplete="off" placeholder="例: ジム">
+      </div>
+
+      <div class="field" id="item-field-varies">
+        <div class="label" id="item-varies-label">金額</div>
+        <div class="choices choices--2" id="item-varies" role="group" aria-labelledby="item-varies-label">
+          <button class="choice choice--small" type="button" data-varies="false" aria-pressed="true">毎月おなじ</button>
+          <button class="choice choice--small" type="button" data-varies="true" aria-pressed="false">毎月かわる</button>
+        </div>
+      </div>
+
+      <div class="field" id="item-field-amount">
+        <label class="label" for="item-amount">毎月の金額</label>
+        <div class="amount amount--small" id="item-amount-box">
+          <span class="amount__yen" aria-hidden="true">¥</span>
+          <input class="amount__input" id="item-amount" name="item-amount" type="text" inputmode="numeric" pattern="[0-9,]*"
+                 autocomplete="off" enterkeyhint="done" placeholder="0" maxlength="10">
+        </div>
+        <p class="hint">まだ確定していない月に、この金額が自動で入ります</p>
+      </div>
+
+      <p class="edit__error" id="item-error" role="alert" hidden></p>
+
+      <div class="dialog__buttons">
+        <button class="btn" id="item-cancel" type="button">やめる</button>
+        <button class="btn btn--dark" id="item-save" type="submit">追加する</button>
+      </div>
+      <button class="btn btn--danger" id="item-stop" type="button" hidden>この項目を停止する</button>
+      <p class="hint" id="item-stop-note" hidden>停止すると、次の月から出なくなります。これまでの記録は残ります。</p>
+    </form>
+  </div>
+
+  <!-- 下のタブ -->
   <nav class="tabs" aria-label="メニュー">
     <button class="tab" type="button" data-tab="input" aria-current="page">
       <svg class="tab__ears" aria-hidden="true" width="30" height="9"><use href="#i-ears"></use></svg>

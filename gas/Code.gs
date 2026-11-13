@@ -28,6 +28,12 @@
  *  - メニューの「④ フォームの回答を取り込む」を押す。回答シートは読むだけで、書きかえない。
  *  - 何度押しても二重にならない。アプリで消した記録が、押し直して復活することもない。
  *  - 「⑤ 月ごとの集計を見る(確認用)」で、月×財布×種類ごとの件数と合計を、いつでも見直せる。
+ *
+ * 毎月の設定(固定費・貯蓄・収入・税金)
+ *  - ひな形は `毎月の項目` シート。アプリの「毎月の設定」で月を確定すると、
+ *    その月の分が `記録` に「元 = 自動」で入る(id は「auto-年月-項目id」。確定し直すと同じ行を書きかえる)。
+ *  - 税金・社会保険の5項目(2人分)は、アプリが最初に読みに来たときに、無ければ自動で足す(1回だけ)。
+ *  - 持ち主は、シートのいまの値で決める(B列を手で書きかえれば、次の確定からその財布の記録になる)。
  */
 
 // ============================================================================
@@ -63,7 +69,9 @@ const SETTINGS_CATEGORY_HEADER = 'カテゴリ';
 const SETTING_KEY = {
   SALT: 'ソルト',
   HASH_PREFIX: '合言葉ハッシュ_', // うしろに名前が付く(例: 合言葉ハッシュ_ゆうき)
+  MONTHLY_READY: '毎月の項目の準備', // 税金の項目を足すなどの準備が済んだら「済み」が入る
 };
+const MONTHLY_READY_VALUE = '済み';
 
 /** 変動費のカテゴリ(初期値。あとは `設定` シートの E列で増減する) */
 const DEFAULT_CATEGORIES = ['食費', '生活必需品', '交際費', '交通費', '病院', '衣類', '雑貨', '美容系', '娯楽費', 'ごまちゃん'];
@@ -71,12 +79,13 @@ const DEFAULT_CATEGORIES = ['食費', '生活必需品', '交際費', '交通費
 /**
  * `毎月の項目` の初期データ(仕様書 4.3 の表)。金額は空で登録する。
  * [持ち主, 区分, 項目名, 毎月かわる]
- * ※ 水道代は、いったん「ゆうき」の固定費のまま(共同口座に移すかは未決定)。
+ * ※ 水道代は「共同口座」の固定費(2026-11 に決定)。
+ *   すでにあるシートは作り直さないので、稼働中のシートは B列(持ち主)を手で書きかえる。
  */
 const DEFAULT_MONTHLY_ITEMS = [
   ['共同口座', '固定費', '住居費', false],
   ['共同口座', '固定費', '光熱費', true],
-  ['ゆうき', '固定費', '水道代', false],
+  ['共同口座', '固定費', '水道代', false],
   ['ゆうき', '固定費', '奨学金', false],
   ['ゆうき', '固定費', 'NETFLIX', false],
   ['ゆうき', '固定費', '携帯', false],
@@ -95,6 +104,17 @@ const DEFAULT_MONTHLY_ITEMS = [
   ['まゆ', '収入', 'バイト', false],
   ['まゆ', '収入', '英検', false],
 ];
+
+/** 毎月の設定で確定する種類(`毎月の項目` の「区分」と同じ文字)。`記録` の「種類」にも、この文字が入る */
+const MONTHLY = { FIXED: '固定費', SAVING: '貯蓄', INCOME: '収入', TAX: '税金' };
+const MONTHLY_KINDS = [MONTHLY.FIXED, MONTHLY.SAVING, MONTHLY.INCOME, MONTHLY.TAX];
+
+/** 税金・社会保険の項目(2人それぞれに、無ければ足す。任意入力) */
+const DEFAULT_TAX_ITEMS = ['所得税', '住民税', '健康保険', '厚生年金', '雇用保険料'];
+
+/** `毎月の項目` の項目名の長さの上限(文字数)と、1回の確定で受けつける項目数の上限 */
+const MAX_ITEM_NAME_LENGTH = 30;
+const MAX_CLOSE_ITEMS = 300;
 
 /** 合言葉の最短の長さ(文字数) */
 const MIN_AIKOTOBA_LENGTH = 4;
@@ -118,6 +138,10 @@ const SOURCE_APP = 'アプリ';
 /** `記録` の「元」列に入れる値(フォームの回答から取り込んだ記録)と、その id の頭 */
 const SOURCE_FORM = 'フォーム取り込み';
 const FORM_ID_PREFIX = 'form-';
+
+/** `記録` の「元」列に入れる値(毎月の設定で確定した記録)と、その id の頭(auto-年月-項目id) */
+const SOURCE_AUTO = '自動';
+const AUTO_ID_PREFIX = 'auto-';
 
 /** フォームの回答の「種類」として取り込むもの */
 const FORM_KINDS = [KIND.VARIABLE, KIND.SPECIAL];
@@ -155,6 +179,9 @@ const HANDLERS = {
   addRecord: { fn: handleAddRecord_, lock: true },
   updateRecord: { fn: handleUpdateRecord_, lock: true },
   deleteRecord: { fn: handleDeleteRecord_, lock: true },
+  addMonthlyItem: { fn: handleAddMonthlyItem_, lock: true },
+  updateMonthlyItem: { fn: handleUpdateMonthlyItem_, lock: true },
+  closeMonth: { fn: handleCloseMonth_, lock: true },
 };
 
 // ============================================================================
@@ -270,9 +297,10 @@ function initMonthlyItemsSheet_(sheet) {
     // id, 持ち主, 区分, 項目名, 金額(空), 毎月かわる, 有効, 並び順
     return [id, item[0], item[1], item[2], '', item[3], true, no * 10];
   });
-  sheet.getRange(2, 1, rows.length, HEADERS.MONTHLY_ITEMS.length).setValues(rows);
-  // 「毎月かわる」「有効」はチェックボックスにする(人が見て分かるように)
+  // 「毎月かわる」「有効」はチェックボックスにする(人が見て分かるように)。
+  // insertCheckboxes は、その範囲の値をすべて FALSE にするので、値を書く前に行う
   sheet.getRange(2, 6, rows.length, 2).insertCheckboxes();
+  sheet.getRange(2, 1, rows.length, HEADERS.MONTHLY_ITEMS.length).setValues(rows);
 }
 
 function initMonthlyClosedSheet_(sheet) {
@@ -461,13 +489,16 @@ function readSettings_() {
   return { sheet: sheet, map: map, rowOf: rowOf, categories: categories };
 }
 
-/** `設定` シートの値を1つ書く(キーの行が無ければ、いちばん下に足す) */
-function writeSetting_(settings, key, value) {
+/** `設定` シートの値を1つ書く(キーの行が無ければ、いちばん下に足す。note はそのときの説明) */
+function writeSetting_(settings, key, value, note) {
   const sheet = settings.sheet;
   let row = settings.rowOf[key];
   if (!row) {
     row = sheet.getLastRow() + 1;
     sheet.getRange(row, SETTINGS_COL.KEY).setNumberFormat('@').setValue(key);
+    if (note) {
+      sheet.getRange(row, SETTINGS_COL.NOTE).setNumberFormat('@').setValue(note);
+    }
     settings.rowOf[key] = row;
   }
   sheet.getRange(row, SETTINGS_COL.VALUE).setNumberFormat('@').setValue(value);
@@ -491,6 +522,8 @@ function doGet() {
  *   成功: { "ok": true, … }
  *   失敗: { "ok": false, "error": "auth" | "locked" | "setup" | "bad_request" | "unknown_action"
  *                                  | "invalid" | "forbidden" | "busy" | "server" }
+ * action: login / sync / addRecord / updateRecord / deleteRecord
+ *         / addMonthlyItem / updateMonthlyItem / closeMonth(毎月の設定)
  */
 function doPost(e) {
   let result;
@@ -645,19 +678,35 @@ function handleLogin_(ctx) {
 }
 
 /**
- * sync: 起動時にまとめて取る。誰の iPhone か、カテゴリ一覧、削除されていない記録の全件。
+ * sync: 起動時にまとめて取る。誰の iPhone か、カテゴリ一覧、削除されていない記録の全件、
+ * 毎月の項目(monthlyItems)と、月の確定の一覧(monthlyClosed)。
  * 相手の財布の分も返す(絞り込みは画面側。仕様書 3章)。
  */
 function handleSync_(ctx) {
+  // 税金の項目などの準備(1回だけ)。うまくいかなくても、同期そのものは止めない
+  try {
+    ensureMonthlyItems_(ctx.settings);
+  } catch (err) {
+    console.error('毎月の項目の準備ができませんでした: ' + (err && err.message ? err.message : err));
+  }
+  return syncPayload_(ctx);
+}
+
+/** sync と同じ中身を作る(毎月の設定の action も、書いたあとにこれを返す。画面は1回の通信で最新になる) */
+function syncPayload_(ctx) {
   const table = openRecords_();
   if (!table) {
     return { ok: false, error: 'setup' };
   }
+  const itemsTable = openMonthlyItems_();
+  const closedTable = openMonthlyClosed_();
   return {
     ok: true,
     user: ctx.user,
     categories: ctx.settings.categories,
     records: listRecords_(table),
+    monthlyItems: itemsTable ? readMonthlyItems_(itemsTable).map(publicMonthlyItem_) : [],
+    monthlyClosed: closedTable ? listMonthlyClosed_(closedTable) : [],
   };
 }
 
@@ -722,6 +771,9 @@ function handleDeleteRecord_(ctx) {
   if (isDeleted_(row[table.col['削除']])) {
     return { ok: true, id: id, found: true };
   }
+  if (isAutoRecord_(table, row)) {
+    return { ok: false, error: 'forbidden' }; // 固定費などは「毎月の設定」の確定でだけ変える
+  }
   if (!canModify_(table, row, ctx.user)) {
     return { ok: false, error: 'forbidden' };
   }
@@ -755,6 +807,9 @@ function handleUpdateRecord_(ctx) {
   if (isDeleted_(row[table.col['削除']])) {
     return { ok: true, id: record.id, found: true, deleted: true, updated: false };
   }
+  if (isAutoRecord_(table, row)) {
+    return { ok: false, error: 'forbidden' }; // 固定費などは「毎月の設定」の確定でだけ変える
+  }
   if (!canModify_(table, row, ctx.user)) {
     return { ok: false, error: 'forbidden' };
   }
@@ -787,7 +842,19 @@ function handleUpdateRecord_(ctx) {
 }
 
 /**
- * その記録を、この人がなおしたり消したりしてよいか。
+ * 毎月の設定で確定した記録(固定費・貯蓄・収入・税金)か。
+ * これらは updateRecord / deleteRecord では変えられない(確定の内容とずれるため)。
+ */
+function isAutoRecord_(table, row) {
+  return (
+    String(row[table.col['元']]).trim() === SOURCE_AUTO ||
+    MONTHLY_KINDS.indexOf(String(row[table.col['種類']]).trim()) !== -1 ||
+    String(row[table.col['id']]).trim().indexOf(AUTO_ID_PREFIX) === 0
+  );
+}
+
+/**
+ * その記録を、この人がなおしたり消したりしてよいか(アプリで入力した3種類の記録について)。
  *   - 財布が本人か共同口座の記録(フォームから取り込んだ共同口座の分は、記録した人が空なので)
  *   - または、記録した人が本人
  * 相手の財布の記録は、さわれない。
@@ -796,6 +863,671 @@ function canModify_(table, row, user) {
   const wallet = String(row[table.col['財布']]).trim();
   const by = String(row[table.col['記録した人']]).trim();
   return wallet === user || wallet === WALLET_JOINT || by === user;
+}
+
+// ============================================================================
+// 毎月の設定(`毎月の項目` と、月の確定)
+// ============================================================================
+
+/**
+ * シートを、列の名前で読む。シートが無い・列名が足りないときは null。
+ * @return {{sheet: Sheet, values: Array[], col: Object}|null} col は「列名 → 0始まりの位置」
+ */
+function openTable_(sheetName, headers) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  if (!sheet) {
+    return null;
+  }
+  const values = sheet.getDataRange().getValues();
+  const header = (values[0] || []).map(function (name) {
+    return String(name).trim();
+  });
+  const col = {};
+  for (let i = 0; i < headers.length; i++) {
+    const index = header.indexOf(headers[i]);
+    if (index === -1) {
+      return null;
+    }
+    col[headers[i]] = index;
+  }
+  return { sheet: sheet, values: values, col: col };
+}
+
+function openMonthlyItems_() {
+  return openTable_(SHEET.MONTHLY_ITEMS, HEADERS.MONTHLY_ITEMS);
+}
+
+function openMonthlyClosed_() {
+  return openTable_(SHEET.MONTHLY_CLOSED, HEADERS.MONTHLY_CLOSED);
+}
+
+/** チェックボックスのセル(TRUE / FALSE)を読む */
+function toBool_(value) {
+  return value === true || String(value).trim().toUpperCase() === 'TRUE';
+}
+
+/**
+ * `毎月の項目` を読む(id が空の行は飛ばす)。持ち主などは、シートのいまの値。
+ * @return {Object[]} { id, owner, kind, name, amount(未登録は 0), varies, active, order, rowNo }
+ */
+function readMonthlyItems_(table) {
+  const col = table.col;
+  const list = [];
+  for (let r = 1; r < table.values.length; r++) {
+    const row = table.values[r];
+    const id = String(row[col['id']]).trim();
+    if (!id) {
+      continue;
+    }
+    const amount = toAmount_(row[col['金額']]);
+    const order = Number(row[col['並び順']]);
+    list.push({
+      id: id,
+      owner: String(row[col['持ち主']]).trim(),
+      kind: String(row[col['区分']]).trim(),
+      name: String(row[col['項目名']]).trim(),
+      amount: amount > 0 ? amount : 0,
+      varies: toBool_(row[col['毎月かわる']]),
+      active: toBool_(row[col['有効']]),
+      order: isFinite(order) ? order : 0,
+      rowNo: r + 1,
+    });
+  }
+  return list;
+}
+
+/** アプリに返す形(列名と同じ日本語のキー。金額が未登録なら null) */
+function publicMonthlyItem_(item) {
+  return {
+    'id': item.id,
+    '持ち主': item.owner,
+    '区分': item.kind,
+    '項目名': item.name,
+    '金額': item.amount > 0 ? item.amount : null,
+    '毎月かわる': item.varies,
+    '有効': item.active,
+    '並び順': item.order,
+  };
+}
+
+/** `毎月の確定` の一覧(どの月を、だれが、いつ確定したか) */
+function listMonthlyClosed_(table) {
+  const tz = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone() || TZ;
+  const col = table.col;
+  const list = [];
+  for (let r = 1; r < table.values.length; r++) {
+    const row = table.values[r];
+    const month = toMonthString_(row[col['月']], '', tz);
+    const by = String(row[col['確定した人']]).trim();
+    if (!month || !by) {
+      continue;
+    }
+    list.push({ '月': month, '確定した人': by, '確定日時': toDateTimeString_(row[col['確定日時']], tz) });
+  }
+  return list;
+}
+
+/** 'YYYY-MM' か(2000〜2100年) */
+function isValidMonthString_(text) {
+  if (typeof text !== 'string') {
+    return false;
+  }
+  const m = text.match(/^(\d{4})-(\d{2})$/);
+  if (!m) {
+    return false;
+  }
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  return y >= 2000 && y <= 2100 && mo >= 1 && mo <= 12;
+}
+
+/**
+ * 1つの列の、とびとびの行に値を書く。となり合った行は、まとめて1回で書く。
+ * @param {number} colNo 列番号(1始まり)
+ * @param {Object[]} cells { rowNo, value }
+ * @param {string|null} format 書式(null なら変えない)
+ */
+function writeColumnRuns_(sheet, colNo, cells, format) {
+  const sorted = cells.slice().sort(function (a, b) {
+    return a.rowNo - b.rowNo;
+  });
+  let i = 0;
+  while (i < sorted.length) {
+    let j = i;
+    while (j + 1 < sorted.length && sorted[j + 1].rowNo === sorted[j].rowNo + 1) {
+      j++;
+    }
+    const range = sheet.getRange(sorted[i].rowNo, colNo, j - i + 1, 1);
+    if (format) {
+      range.setNumberFormat(format);
+    }
+    range.setValues(
+      sorted.slice(i, j + 1).map(function (cell) {
+        return [cell.value];
+      })
+    );
+    i = j + 1;
+  }
+}
+
+/**
+ * `毎月の項目` の、いちばん下に項目を足す。
+ * id は「M + 連番」。いまある id のいちばん大きい番号の次から振るので、重ならない。
+ * @param {Object[]} items    いまある項目(readMonthlyItems_ の結果)
+ * @param {Object[]} newItems { owner, kind, name, amount, varies }
+ * @return {string[]} 足した項目の id
+ */
+function appendMonthlyItems_(table, items, newItems) {
+  if (!newItems.length) {
+    return [];
+  }
+  const sheet = table.sheet;
+  const col = table.col;
+  let maxNo = 0;
+  let maxOrder = 0;
+  items.forEach(function (item) {
+    const m = /^M(\d+)$/.exec(item.id);
+    if (m) {
+      maxNo = Math.max(maxNo, Number(m[1]));
+    }
+    maxOrder = Math.max(maxOrder, item.order);
+  });
+
+  const indexes = HEADERS.MONTHLY_ITEMS.map(function (name) {
+    return col[name];
+  });
+  const first = Math.min.apply(null, indexes);
+  const width = Math.max.apply(null, indexes) - first + 1;
+  const ids = [];
+  const values = newItems.map(function (item) {
+    maxNo += 1;
+    maxOrder += 10;
+    const id = 'M' + (maxNo < 1000 ? ('00' + maxNo).slice(-3) : String(maxNo));
+    ids.push(id);
+    const row = [];
+    for (let i = 0; i < width; i++) {
+      row.push('');
+    }
+    row[col['id'] - first] = id;
+    row[col['持ち主'] - first] = item.owner;
+    row[col['区分'] - first] = item.kind;
+    row[col['項目名'] - first] = item.name;
+    row[col['金額'] - first] = item.amount > 0 ? item.amount : '';
+    row[col['毎月かわる'] - first] = Boolean(item.varies);
+    row[col['有効'] - first] = true;
+    row[col['並び順'] - first] = maxOrder;
+    return row;
+  });
+
+  const n = values.length;
+  const rowNo = Math.max(sheet.getLastRow(), 1) + 1;
+  const lastRowNo = rowNo + n - 1;
+  if (lastRowNo > sheet.getMaxRows()) {
+    sheet.insertRowsAfter(sheet.getMaxRows(), lastRowNo - sheet.getMaxRows() + 50);
+  }
+  // チェックボックスは、値を書く前に入れる(insertCheckboxes は、その範囲の値を FALSE にするため)
+  sheet.getRange(rowNo, col['毎月かわる'] + 1, n, 1).insertCheckboxes();
+  sheet.getRange(rowNo, col['有効'] + 1, n, 1).insertCheckboxes();
+  // id と項目名は文字のまま持つ
+  sheet.getRange(rowNo, col['id'] + 1, n, 1).setNumberFormat('@');
+  sheet.getRange(rowNo, col['項目名'] + 1, n, 1).setNumberFormat('@');
+  sheet.getRange(rowNo, first + 1, n, width).setValues(values);
+  return ids;
+}
+
+/**
+ * `毎月の項目` の準備(1回だけ。済んだら `設定` シートに印を書く)。
+ *   1. 税金・社会保険の5項目を、2人それぞれに、無ければ足す。
+ *   2. 「有効」がすべて FALSE になっていたら、すべて TRUE に戻す。
+ *      (以前の初期設定は、値を書いたあとにチェックボックスを入れていた。その操作は値を FALSE にするため、
+ *       全項目が「停止中」に見えてしまう。アプリから停止できるようになる前なので、全部 FALSE は初期設定のせいと見なす)
+ * 何度呼んでも、二重には足さない。
+ */
+function ensureMonthlyItems_(settings) {
+  if (settings.map[SETTING_KEY.MONTHLY_READY] === MONTHLY_READY_VALUE) {
+    return;
+  }
+  withLock_(function () {
+    // 鍵を取ってから読み直す(2人が同時に開いても、二重に足さない)
+    const fresh = readSettings_();
+    if (!fresh || fresh.map[SETTING_KEY.MONTHLY_READY] === MONTHLY_READY_VALUE) {
+      return;
+    }
+    const table = openMonthlyItems_();
+    if (!table) {
+      return; // シートが無い・列名が足りない → 何もしない(次に開いたとき、また試す)
+    }
+    const items = readMonthlyItems_(table);
+
+    if (items.length && items.every(function (item) { return !item.active; })) {
+      writeColumnRuns_(
+        table.sheet,
+        table.col['有効'] + 1,
+        items.map(function (item) {
+          item.active = true;
+          return { rowNo: item.rowNo, value: true };
+        }),
+        null
+      );
+      // 「毎月かわる」も同じ理由で消えているはずなので、初期データで印が付いていた項目(光熱費)だけ戻す
+      if (items.every(function (item) { return !item.varies; })) {
+        const cells = [];
+        items.forEach(function (item) {
+          const wasVarying = DEFAULT_MONTHLY_ITEMS.some(function (d) {
+            return d[3] === true && d[1] === item.kind && d[2] === item.name;
+          });
+          if (wasVarying) {
+            item.varies = true;
+            cells.push({ rowNo: item.rowNo, value: true });
+          }
+        });
+        writeColumnRuns_(table.sheet, table.col['毎月かわる'] + 1, cells, null);
+      }
+    }
+
+    const missing = [];
+    USERS.forEach(function (user) {
+      DEFAULT_TAX_ITEMS.forEach(function (name) {
+        const exists = items.some(function (item) {
+          return item.owner === user && item.kind === MONTHLY.TAX && item.name === name;
+        });
+        if (!exists) {
+          missing.push({ owner: user, kind: MONTHLY.TAX, name: name, amount: 0, varies: true });
+        }
+      });
+    });
+    appendMonthlyItems_(table, items, missing);
+
+    writeSetting_(
+      fresh,
+      SETTING_KEY.MONTHLY_READY,
+      MONTHLY_READY_VALUE,
+      '`毎月の項目` に税金・社会保険の項目を足した印です。この行を消すと、次にアプリを開いたときに、足りない項目をもういちど足します'
+    );
+  });
+}
+
+/** 項目名をととのえる。空・長すぎ・文字でないときは null */
+function cleanItemName_(value) {
+  const text = cleanText_(value);
+  if (!text || countChars_(text) > MAX_ITEM_NAME_LENGTH) {
+    return null;
+  }
+  return text;
+}
+
+/** 任意の金額: 空(null / '' / 0 / 無し)→ 0、正の整数 → その数、それ以外 → -1 */
+function parseOptionalAmount_(value) {
+  if (value === null || value === undefined || value === '' || value === 0) {
+    return 0;
+  }
+  if (typeof value !== 'number' || !isFinite(value) || Math.floor(value) !== value || value < 0 || value > MAX_AMOUNT) {
+    return -1;
+  }
+  return value;
+}
+
+/** `毎月の項目` の1行の、いくつかのマスを書く。patch は { name, amount, varies, active } のうち、変えるものだけ */
+function writeMonthlyItemCells_(table, item, patch) {
+  const sheet = table.sheet;
+  const col = table.col;
+  if (patch.name !== undefined) {
+    sheet.getRange(item.rowNo, col['項目名'] + 1).setNumberFormat('@').setValue(patch.name);
+  }
+  if (patch.amount !== undefined) {
+    sheet.getRange(item.rowNo, col['金額'] + 1).setNumberFormat('#,##0').setValue(patch.amount > 0 ? patch.amount : '');
+  }
+  if (patch.varies !== undefined) {
+    sheet.getRange(item.rowNo, col['毎月かわる'] + 1).setValue(patch.varies);
+  }
+  if (patch.active !== undefined) {
+    sheet.getRange(item.rowNo, col['有効'] + 1).setValue(patch.active);
+  }
+}
+
+/** 書いたあとの最新の中身(sync と同じ)に、その action の結果を足して返す */
+function withSyncPayload_(ctx, extra) {
+  SpreadsheetApp.flush();
+  const payload = syncPayload_(ctx);
+  if (!payload.ok) {
+    return payload;
+  }
+  Object.keys(extra).forEach(function (key) {
+    payload[key] = extra[key];
+  });
+  return payload;
+}
+
+/**
+ * addMonthlyItem: 毎月の項目を足す。
+ *   リクエスト: { 持ち主, 区分, 項目名, 金額(任意), 毎月かわる(任意) }
+ *   足せるのは、自分の項目か、共同口座の固定費だけ(相手の項目は forbidden)。
+ *   同じ持ち主・区分・項目名の項目がすでにあれば、足さない(duplicate: true)。
+ *   それが停止中なら、足さずに「有効」に戻す(revived: true)。送り直しても二重にならない。
+ *   応答: { ok, id, duplicate, revived, …sync と同じ中身 }
+ */
+function handleAddMonthlyItem_(ctx) {
+  const req = ctx.req;
+  const owner = req['持ち主'];
+  if (owner !== ctx.user && owner !== WALLET_JOINT) {
+    return USERS.indexOf(owner) !== -1 ? { ok: false, error: 'forbidden' } : { ok: false, error: 'invalid', field: '持ち主' };
+  }
+  const kind = req['区分'];
+  if (MONTHLY_KINDS.indexOf(kind) === -1 || (owner === WALLET_JOINT && kind !== MONTHLY.FIXED)) {
+    return { ok: false, error: 'invalid', field: '区分' };
+  }
+  const name = cleanItemName_(req['項目名']);
+  if (!name) {
+    return { ok: false, error: 'invalid', field: '項目名' };
+  }
+  const amount = parseOptionalAmount_(req['金額']);
+  if (amount < 0) {
+    return { ok: false, error: 'invalid', field: '金額' };
+  }
+  const variesGiven = req['毎月かわる'];
+  if (variesGiven !== undefined && variesGiven !== null && typeof variesGiven !== 'boolean') {
+    return { ok: false, error: 'invalid', field: '毎月かわる' };
+  }
+  const varies = variesGiven === true;
+
+  const table = openMonthlyItems_();
+  if (!table) {
+    return { ok: false, error: 'setup' };
+  }
+  const items = readMonthlyItems_(table);
+  const same = items.filter(function (item) {
+    return item.owner === owner && item.kind === kind && item.name === name;
+  });
+  const active = same.filter(function (item) {
+    return item.active;
+  })[0];
+  if (active) {
+    return withSyncPayload_(ctx, { id: active.id, duplicate: true, revived: false });
+  }
+  if (same.length) {
+    writeMonthlyItemCells_(table, same[0], { amount: amount, varies: varies, active: true });
+    return withSyncPayload_(ctx, { id: same[0].id, duplicate: false, revived: true });
+  }
+  const ids = appendMonthlyItems_(table, items, [{ owner: owner, kind: kind, name: name, amount: amount, varies: varies }]);
+  return withSyncPayload_(ctx, { id: ids[0], duplicate: false, revived: false });
+}
+
+/**
+ * updateMonthlyItem: 毎月の項目をなおす・停止する。
+ *   リクエスト: { id, 項目名?, 金額?, 毎月かわる?, 有効? }(送ったものだけ変える。有効: false が「停止」)
+ *   なおせるのは、持ち主(シートのいまの値)が本人か共同口座の項目だけ。持ち主と区分は変えられない。
+ *   停止しても行は消さない。これまでの記録も残る。
+ *   応答: { ok, id, updated, …sync と同じ中身 }
+ */
+function handleUpdateMonthlyItem_(ctx) {
+  const req = ctx.req;
+  if (typeof req.id !== 'string' || req.id === '' || req.id.length > 64) {
+    return { ok: false, error: 'invalid', field: 'id' };
+  }
+  const table = openMonthlyItems_();
+  if (!table) {
+    return { ok: false, error: 'setup' };
+  }
+  const items = readMonthlyItems_(table);
+  const item = items.filter(function (it) {
+    return it.id === req.id;
+  })[0];
+  if (!item) {
+    return { ok: false, error: 'invalid', field: 'id' };
+  }
+  if (item.owner !== ctx.user && item.owner !== WALLET_JOINT) {
+    return { ok: false, error: 'forbidden' };
+  }
+
+  const patch = {};
+  let name = item.name;
+  if (req['項目名'] !== undefined) {
+    name = cleanItemName_(req['項目名']);
+    if (!name) {
+      return { ok: false, error: 'invalid', field: '項目名' };
+    }
+    if (name !== item.name) {
+      patch.name = name;
+    }
+  }
+  if (req['金額'] !== undefined) {
+    const amount = parseOptionalAmount_(req['金額']);
+    if (amount < 0) {
+      return { ok: false, error: 'invalid', field: '金額' };
+    }
+    if (amount !== item.amount) {
+      patch.amount = amount;
+    }
+  }
+  if (req['毎月かわる'] !== undefined) {
+    if (typeof req['毎月かわる'] !== 'boolean') {
+      return { ok: false, error: 'invalid', field: '毎月かわる' };
+    }
+    if (req['毎月かわる'] !== item.varies) {
+      patch.varies = req['毎月かわる'];
+    }
+  }
+  let active = item.active;
+  if (req['有効'] !== undefined) {
+    if (typeof req['有効'] !== 'boolean') {
+      return { ok: false, error: 'invalid', field: '有効' };
+    }
+    active = req['有効'];
+    if (active !== item.active) {
+      patch.active = active;
+    }
+  }
+  // 同じ持ち主・区分に、同じ名前の有効な項目が2つできないようにする
+  if (active && (patch.name !== undefined || patch.active !== undefined)) {
+    const clash = items.some(function (other) {
+      return other.id !== item.id && other.active && other.owner === item.owner && other.kind === item.kind && other.name === name;
+    });
+    if (clash) {
+      return { ok: false, error: 'invalid', field: '項目名', reason: 'duplicate' };
+    }
+  }
+
+  const updated = Object.keys(patch).length > 0;
+  if (updated) {
+    writeMonthlyItemCells_(table, item, patch);
+  }
+  return withSyncPayload_(ctx, { id: item.id, updated: updated });
+}
+
+/**
+ * closeMonth: 月を確定する(その月の固定費・貯蓄・収入・税金を `記録` に書く)。
+ *   リクエスト: { 月: 'YYYY-MM', 金額: { 項目id: 円, … }, 消す: [項目id, …](任意) }
+ *   対象は、持ち主(シートのいまの値)が本人か共同口座の項目だけ。相手の項目が入っていたら forbidden(何も書かない)。
+ *
+ *   記録の id は「auto-年月-項目id」(例: auto-202611-M001)。月と項目から決まるので、
+ *   何度確定しても同じ行を書きかえるだけで、二重にならない。
+ *     - 金額が正の数      → 無ければ足す。あれば金額などを書きかえる(削除の印が付いていたら外す = 復活)
+ *     - 「消す」にある項目 → 記録があれば、削除の印を付ける
+ *     - 金額が空 / 0      → 自分の項目は「消す」と同じ。共同口座の項目は、何もしない
+ *                           (相手が入れた共同口座の金額を、自分が空のまま確定して消してしまわないため)
+ *     - リクエストに無い項目 → 何もしない
+ *   共同口座の項目は、あとから確定した人の値になる(後勝ち)。
+ *   「毎月おなじ」の固定費・貯蓄で、金額がまだ登録されていない項目は、確定した金額を登録する(次の月から自動で入る)。
+ *   確定のたびに `毎月の確定` を書く(同じ月・同じ人は1行。確定日時を新しくする)。
+ *   応答: { ok, 月, 確定日時, written, removed, …sync と同じ中身 }
+ */
+function handleCloseMonth_(ctx) {
+  const req = ctx.req;
+  const user = ctx.user;
+  const month = req['月'];
+  if (!isValidMonthString_(month)) {
+    return { ok: false, error: 'invalid', field: '月' };
+  }
+  const amounts = req['金額'];
+  if (!amounts || typeof amounts !== 'object' || Array.isArray(amounts)) {
+    return { ok: false, error: 'invalid', field: '金額' };
+  }
+  const removeList = req['消す'] === undefined || req['消す'] === null ? [] : req['消す'];
+  if (!Array.isArray(removeList) || removeList.some(function (id) { return typeof id !== 'string'; })) {
+    return { ok: false, error: 'invalid', field: '消す' };
+  }
+  const ids = Object.keys(amounts);
+  removeList.forEach(function (id) {
+    if (ids.indexOf(id) === -1) {
+      ids.push(id);
+    }
+  });
+  if (ids.length > MAX_CLOSE_ITEMS) {
+    return { ok: false, error: 'invalid', field: '金額' };
+  }
+
+  const itemsTable = openMonthlyItems_();
+  const table = openRecords_();
+  const closedTable = openMonthlyClosed_();
+  if (!itemsTable || !table || !closedTable) {
+    return { ok: false, error: 'setup' };
+  }
+  const items = readMonthlyItems_(itemsTable);
+  const byId = {};
+  items.forEach(function (item) {
+    if (!byId[item.id]) {
+      byId[item.id] = item;
+    }
+  });
+
+  // --- まず全部たしかめる(1つでもだめなら、何も書かない) ---
+  const plan = []; // { item, amount }  amount: 正の数 = 書く / 0 = 消す
+  for (let i = 0; i < ids.length; i++) {
+    const item = Object.prototype.hasOwnProperty.call(byId, ids[i]) ? byId[ids[i]] : null;
+    if (!item || MONTHLY_KINDS.indexOf(item.kind) === -1) {
+      return { ok: false, error: 'invalid', field: '金額', id: ids[i] };
+    }
+    if (item.owner !== user && item.owner !== WALLET_JOINT) {
+      return { ok: false, error: 'forbidden', id: ids[i] };
+    }
+    if (removeList.indexOf(item.id) !== -1) {
+      plan.push({ item: item, amount: 0 });
+      continue;
+    }
+    const amount = parseOptionalAmount_(amounts[item.id]);
+    if (amount < 0) {
+      return { ok: false, error: 'invalid', field: '金額', id: item.id };
+    }
+    if (amount > 0) {
+      plan.push({ item: item, amount: amount });
+    } else if (item.owner === user) {
+      plan.push({ item: item, amount: 0 });
+    }
+    // 共同口座の項目が空 → 何もしない
+  }
+
+  // --- `記録` に書く内容を決める ---
+  const col = table.col;
+  const now = Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd HH:mm:ss');
+  const yearMonth = month.replace('-', '');
+  const appends = [];
+  const cells = {}; // 列名 → [{ rowNo, value }]
+  const MANAGED = ['財布', '種類', '項目', '金額', '記録した人', '削除'];
+  MANAGED.forEach(function (name) {
+    cells[name] = [];
+  });
+  let written = 0;
+  let removed = 0;
+  const register = []; // `毎月の項目` の金額に登録する分 { rowNo, value }
+
+  plan.forEach(function (p) {
+    const item = p.item;
+    const id = AUTO_ID_PREFIX + yearMonth + '-' + item.id;
+    const rowNo = findRecordRow_(table, id);
+    if (p.amount > 0 && !item.varies && item.amount === 0 && (item.kind === MONTHLY.FIXED || item.kind === MONTHLY.SAVING)) {
+      register.push({ rowNo: item.rowNo, value: p.amount });
+    }
+    if (rowNo < 0) {
+      if (p.amount > 0) {
+        appends.push({
+          'id': id,
+          '作成日時': now,
+          '日付': month + '-01',
+          '月': month,
+          '財布': item.owner,
+          '種類': item.kind,
+          '項目': item.name,
+          'メモ': '',
+          '金額': p.amount,
+          '記録した人': user,
+          '元': SOURCE_AUTO,
+          '削除': '',
+        });
+        written += 1;
+      }
+      return;
+    }
+    const row = table.values[rowNo - 1];
+    const deleted = isDeleted_(row[col['削除']]);
+    if (p.amount > 0) {
+      const next = { '財布': item.owner, '種類': item.kind, '項目': item.name, '金額': p.amount, '削除': '' };
+      let changed = false;
+      Object.keys(next).forEach(function (name) {
+        const current = row[col[name]];
+        const same = name === '金額' ? toAmount_(current) === next[name] : name === '削除' ? !deleted : String(current).trim() === next[name];
+        if (!same) {
+          cells[name].push({ rowNo: rowNo, value: next[name] });
+          changed = true;
+        }
+      });
+      if (changed) {
+        // 中身を変えた人を、記録した人にする(変わっていなければ、前に確定した人のまま)
+        if (String(row[col['記録した人']]) !== user) {
+          cells['記録した人'].push({ rowNo: rowNo, value: user });
+        }
+        written += 1;
+      }
+    } else if (!deleted) {
+      cells['削除'].push({ rowNo: rowNo, value: DELETED_MARK });
+      if (String(row[col['記録した人']]) !== user) {
+        cells['記録した人'].push({ rowNo: rowNo, value: user });
+      }
+      removed += 1;
+    }
+  });
+
+  // --- まとめて書く ---
+  MANAGED.forEach(function (name) {
+    writeColumnRuns_(table.sheet, col[name] + 1, cells[name], name === '金額' ? '#,##0' : '@');
+  });
+  appendRecords_(table, appends);
+  writeColumnRuns_(itemsTable.sheet, itemsTable.col['金額'] + 1, register, '#,##0');
+  writeMonthlyClosed_(closedTable, month, user, now);
+
+  return withSyncPayload_(ctx, { '月': month, '確定日時': now, written: written, removed: removed });
+}
+
+/** `毎月の確定` に書く。同じ月・同じ人の行があれば確定日時だけ新しくし、無ければ1行足す */
+function writeMonthlyClosed_(table, month, user, now) {
+  const tz = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone() || TZ;
+  const sheet = table.sheet;
+  const col = table.col;
+  for (let r = 1; r < table.values.length; r++) {
+    const row = table.values[r];
+    if (toMonthString_(row[col['月']], '', tz) === month && String(row[col['確定した人']]).trim() === user) {
+      sheet.getRange(r + 1, col['確定日時'] + 1).setNumberFormat('@').setValue(now);
+      return;
+    }
+  }
+  const indexes = HEADERS.MONTHLY_CLOSED.map(function (name) {
+    return col[name];
+  });
+  const first = Math.min.apply(null, indexes);
+  const width = Math.max.apply(null, indexes) - first + 1;
+  const values = [];
+  const formats = [];
+  for (let i = 0; i < width; i++) {
+    values.push('');
+    formats.push('@');
+  }
+  values[col['月'] - first] = month;
+  values[col['確定した人'] - first] = user;
+  values[col['確定日時'] - first] = now;
+  const rowNo = Math.max(sheet.getLastRow(), 1) + 1;
+  if (rowNo > sheet.getMaxRows()) {
+    sheet.insertRowsAfter(sheet.getMaxRows(), 50);
+  }
+  sheet.getRange(rowNo, first + 1, 1, width).setNumberFormats([formats]).setValues([values]);
 }
 
 // ============================================================================
@@ -1033,7 +1765,8 @@ function cleanText_(value) {
  * @return {{record: Object}|{field: string}} だめなときは、だめだった項目名を field に入れる
  */
 function validateRecord_(req, user) {
-  if (!isValidId_(req.id)) {
+  // auto- ではじまる id は、毎月の設定の確定で使う(アプリの入力からは作らせない)
+  if (!isValidId_(req.id) || req.id.indexOf(AUTO_ID_PREFIX) === 0) {
     return { field: 'id' };
   }
   if (!isValidDateString_(req['日付'])) {
@@ -1543,7 +2276,7 @@ function summarizeRecords_(table) {
   });
 
   const walletOrder = USERS.concat([WALLET_JOINT]);
-  const kindOrder = [KIND.VARIABLE, KIND.SPECIAL, KIND.DEPOSIT];
+  const kindOrder = [KIND.VARIABLE, KIND.SPECIAL, KIND.DEPOSIT].concat(MONTHLY_KINDS);
   const rank = function (list, value) {
     const i = list.indexOf(value);
     return i === -1 ? list.length : i;

@@ -1264,6 +1264,530 @@ button.row:active {
   min-height: 48px;
 }
 
+/* --- 見る: 固定費・貯蓄・収入の行、来月の目安 ----------------------------- */
+
+/* 固定費(合計に入れる)・貯蓄・収入(合計に入れない)を、特別費と同じ形で1行ずつ */
+.extras {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid #EDE6DC;
+}
+
+.extra {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.extra__left {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.extra__note {
+  font-size: 11px;
+  color: var(--c-gray);
+}
+
+.extra__amount {
+  flex-shrink: 0;
+  font-weight: 700;
+}
+
+/* 来月、共同口座に入れる目安(クリーム色。見本 HTML 4 の寸法) */
+.view--look .estimate {
+  gap: 6px;
+  padding: 12px 16px;
+}
+
+.estimate__title {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.estimate__nums {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 20px;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.estimate__nums b {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.estimate__nums[data-tone="none"] {
+  color: var(--c-gray);
+}
+
+.estimate__formula,
+.estimate__list,
+.estimate__more summary {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--c-gray);
+}
+
+.estimate__more summary {
+  display: inline-block;
+  min-height: 32px;
+  padding: 6px 0;
+  font-weight: 700;
+  text-decoration: underline;
+  cursor: pointer;
+  list-style: none;
+}
+
+.estimate__more summary::-webkit-details-marker {
+  display: none;
+}
+
+.estimate__list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0 0 4px;
+  list-style: none;
+}
+
+.estimate__list b {
+  color: var(--c-ink);
+  font-weight: 700;
+}
+
+.estimate__list [data-tone="warn"] {
+  color: var(--c-pink-dark);
+  font-weight: 700;
+}
+
+/* 明細の、確定した固定費などの行(押すと「毎月の設定」へ) */
+.row__auto {
+  margin-left: 6px;
+  text-decoration: underline;
+}
+
+/* --- 毎月の設定(寸法は見本 HTML 5 のとおり) ------------------------------- */
+
+.view--monthly {
+  gap: 12px;
+  padding: calc(var(--safe-top) + 18px) calc(var(--safe-right) + var(--gutter)) 16px calc(var(--safe-left) + var(--gutter));
+}
+
+.monthly {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* 見出し: まるい写真(64px)と題 */
+.mhead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.mhead__photo {
+  position: relative;
+  flex-shrink: 0;
+  width: 64px;
+  height: 64px;
+  overflow: hidden;
+  border-radius: 32px;
+  background: var(--c-amber-light);
+}
+
+.mhead__photo-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.mhead__goma {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 54px;
+  height: auto;
+  transform: translate(-50%, -46%);
+}
+
+.mhead__photo[data-state="photo"] .mhead__goma {
+  display: none;
+}
+
+.mhead__text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.mhead__title {
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.mhead__sub {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--c-gray);
+}
+
+.view--monthly .month {
+  margin: -6px 0;
+}
+
+.view--monthly .look-empty {
+  padding: 28px 16px;
+}
+
+/* カード */
+.mcard {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 6px 16px 10px;
+}
+
+/* のぞきごま(カードの上のふちから顔を出す)。そのぶん、上を空ける */
+.mcard--peek {
+  margin-top: 24px;
+  padding-top: 8px;
+}
+
+.mcard__peek {
+  position: absolute;
+  right: 28px;
+  top: -37px;
+  width: 70px;
+  height: 38px;
+  pointer-events: none;
+}
+
+.mcard__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 44px;
+}
+
+/* 「追加」などの、文字だけのボタン */
+.mcard__link,
+.mcard__toggle {
+  flex-shrink: 0;
+  min-height: var(--tap);
+  padding: 0 4px;
+  border: none;
+  background: transparent;
+  color: var(--c-gray);
+  font-size: 14px;
+  font-weight: 700;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.mcard__link {
+  margin-right: -4px;
+}
+
+.mcard__link--end {
+  align-self: flex-end;
+}
+
+.mcard__toggle {
+  align-self: flex-start;
+  margin: 2px 0 -6px -4px;
+  font-size: 13px;
+}
+
+.mcard__tax {
+  display: flex;
+  flex-direction: column;
+  padding-top: 6px;
+}
+
+.mcard__hint,
+.mcard__none {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--c-gray);
+}
+
+.mcard__hint {
+  margin: -6px 0 6px;
+}
+
+.mcard__tax .mcard__hint {
+  margin: 0 0 6px;
+}
+
+.mcard__none {
+  padding: 4px 0 10px;
+}
+
+/* 小見出し(共同口座 / 自分 / 貯蓄)。右に、その合計 */
+.mgroup {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 0 6px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.5;
+  color: var(--c-gray);
+}
+
+.mrows > .mgroup:first-child {
+  padding-top: 2px;
+}
+
+.mgroup--total {
+  padding: 8px 0 2px;
+  border-top: 1px solid #EDE6DC;
+}
+
+/* 1行: 左に項目のなまえ(押すと、項目をなおす)、右に今月の金額 */
+.mrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 48px;
+  border-top: 1px solid #EDE6DC;
+}
+
+.mrow__name {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  min-width: 0;
+  min-height: 48px;
+  padding: 2px 0;
+  border: none;
+  background: transparent;
+  color: var(--c-ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.mrow__label {
+  max-width: 100%;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.mrow__sub {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--c-gray);
+}
+
+.mrow__amount {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  width: 9.5em;
+  min-height: 48px;
+  cursor: text;
+}
+
+/* 肉球と ¥ は、金額が入っているときだけ */
+.mrow__paw,
+.mrow__yen {
+  display: none;
+  flex-shrink: 0;
+}
+
+.mrow__paw {
+  margin-right: 6px;
+  color: var(--c-amber-dark);
+}
+
+.mrow__yen {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.mrow[data-filled] .mrow__paw,
+.mrow[data-filled] .mrow__yen {
+  display: block;
+}
+
+/* 文字は 16px(iPhone が勝手に拡大しない) */
+.mrow__input {
+  flex: 0 1 auto;
+  width: 100%;
+  min-width: 0;
+  height: 44px;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  outline: none;
+  background: transparent;
+  color: var(--c-ink);
+  font-size: 16px;
+  font-weight: 700;
+  text-align: right;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* 金額が入っている欄は、JS が数字の幅だけにする(見本どおり、肉球と ¥ が数字のすぐ左に並ぶ) */
+
+.mrow__input:focus {
+  box-shadow: 0 1.5px 0 var(--c-ink);
+}
+
+/* 未入力は、注意の色でうながす */
+.mrow__input::placeholder {
+  color: var(--c-pink-dark);
+  font-size: 14px;
+  opacity: 1;
+  text-decoration: underline;
+}
+
+/* 税金などの任意の欄は、うながさない */
+.mrow--optional .mrow__input::placeholder {
+  color: var(--c-silver-dark);
+  font-weight: 400;
+  text-decoration: none;
+}
+
+.mrow--optional .mrow__paw {
+  display: none !important;
+}
+
+/* 収入が1つだけのとき: 見本どおりの大きな欄(なまえは上に小さく) */
+.mrow--big {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  border-top: none;
+  padding-bottom: 6px;
+}
+
+.mrow--big .mrow__name {
+  min-height: 0;
+  padding: 0 0 4px;
+}
+
+.mrow--big .mrow__label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--c-gray);
+}
+
+.mrow--big .mrow__amount {
+  width: auto;
+  height: 56px;
+  padding: 0 16px;
+  border: 1.5px solid var(--c-line);
+  border-radius: var(--r-control);
+}
+
+.mrow--big .mrow__amount:focus-within {
+  border-color: var(--c-ink);
+}
+
+.mrow--big .mrow__paw {
+  display: none !important;
+}
+
+.mrow--big .mrow__yen {
+  display: block;
+  margin-right: auto;
+  color: var(--c-gray);
+  font-size: 20px;
+}
+
+.mrow--big .mrow__input {
+  width: 100% !important;
+  height: 100%;
+  font-size: 26px;
+}
+
+.mrow--big .mrow__input:focus {
+  box-shadow: none;
+}
+
+.mrow--big .mrow__input::placeholder {
+  color: var(--c-gray);
+  font-size: 26px;
+  text-decoration: none;
+}
+
+/* 確定のようす */
+.monthly__status {
+  padding: 0 4px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--c-gray);
+  white-space: pre-line;
+}
+
+.monthly__status[data-tone="warn"]::first-line {
+  color: var(--c-pink-dark);
+  font-weight: 700;
+}
+
+.about {
+  margin-top: 8px;
+}
+
+.about__status {
+  font-size: 13px;
+  color: var(--c-gray);
+}
+
+/* 項目の追加・変更のダイアログ(キーボードが出ても隠れないように、上に寄せて、中をスクロールできるようにする) */
+.dialog-backdrop--top {
+  align-items: flex-start;
+  padding-top: calc(var(--safe-top) + 24px);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.dialog--form {
+  gap: 10px;
+  margin: auto 0;
+}
+
+.choice--small {
+  height: 44px;
+  font-size: 13px;
+}
+
+.amount--small {
+  height: 52px;
+}
+
+.amount--small .amount__input {
+  font-size: 22px;
+}
+
+.btn--dark {
+  border-color: var(--c-ink);
+  background: var(--c-ink);
+  color: var(--c-white);
+}
+
 /* --- 下のタブ(猫耳タブ) ------------------------------------------------- */
 
 .tabs {

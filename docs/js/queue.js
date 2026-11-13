@@ -9,10 +9,13 @@
 //
 // 送り方
 //   - 古い順に1件ずつ。成功したらキューから外す。
-//   - 電波がない・保存先が混んでいる・ロック中(locked)・保存先が古い版(unknown_action)
-//     などは、キューに残して止まる。次の合図(起動・online・画面復帰・30秒後)で送り直す。
+//   - 電波がない・保存先が混んでいる・ロック中(locked)などは、キューに残して止まる。
+//     次の合図(起動・online・画面復帰・30秒後)で送り直す。
 //   - 保存先は同じ id を二重に書かないので、何度送り直しても二重にならない。
 //   - 送り直しても通らない失敗(invalid / forbidden)だけは、キューから外して知らせる。
+//   - 保存先が古い版で、その操作をまだ知らない(unknown_action)ときは、その操作だけ後回しにして、
+//     うしろの操作を先に送る(1件が詰まって、ふつうの入力まで送れなくなるのを防ぐ)。
+//     後回しにした操作はキューに残り、しばらくして(または次に開いたとき)送り直す。
 
 import { ApiError, addRecord, deleteRecord, updateRecord } from "./api.js";
 import * as store from "./store.js";
@@ -22,10 +25,29 @@ import { newId } from "./util.js";
 const RETRY_MS = 30000;
 /** 残しても通る見込みがないエラー */
 const PERMANENT_ERRORS = ["invalid", "forbidden"];
+/** 保存先が古い版で受けつけてもらえなかった操作を、つぎに送ってみるまでの間隔 */
+const DEFER_MS = 5 * 60 * 1000;
 
 const listeners = new Set();
 let running = null; // 送信中の Promise(同時に2本走らせない)
 let retryTimer = 0;
+/** 後回しにしている操作(key → 後回しにした時刻)。アプリを開き直すと空になり、もういちど試す */
+const deferred = new Map();
+
+function isDeferred(op) {
+  const at = deferred.get(op.key);
+  if (at === undefined) return false;
+  if (Date.now() - at >= DEFER_MS) {
+    deferred.delete(op.key);
+    return false;
+  }
+  return true;
+}
+
+/** 保存先が古い版のために、送れずに待っている操作があるか(自分の分) */
+export function needsUpdate() {
+  return mine(store.getQueue()).some((op) => deferred.has(op.key));
+}
 
 /**
  * キューの変化を受け取る。
@@ -184,8 +206,18 @@ async function run() {
     if (!store.getAikotoba() || !store.getUser()) return;
 
     const queue = store.getQueue();
-    const op = mine(queue)[0];
-    if (!op) return;
+    const waiting = mine(queue);
+    // 後回しにしている操作は飛ばして、その次から送る
+    const op = waiting.find((o) => !isDeferred(o));
+    if (!op) {
+      // 残りは、後回しの分だけ。キューから消えた操作の印は捨てて、あとでもういちど試す
+      const keys = new Set(waiting.map((o) => o.key));
+      for (const key of deferred.keys()) {
+        if (!keys.has(key)) deferred.delete(key);
+      }
+      if (waiting.length > 0) scheduleRetry();
+      return;
+    }
 
     // 電波がないと分かっているときは、送ろうとしない(「送ろうとした」印も付けない。
     // 印が無いうちは、取り消しがキューから外すだけで済む)
@@ -235,6 +267,12 @@ async function run() {
         removeByKey(op.key);
         emit({ type: "dropped", code, op });
         emit({ type: "change" });
+        continue;
+      }
+      if (code === "unknown_action") {
+        // 保存先が古い版。この操作だけ後回しにして、うしろの操作を送る
+        deferred.set(op.key, Date.now());
+        emit({ type: "error", code, op });
         continue;
       }
       // 合言葉がちがう(auth)ときも、記録は残す。入れ直したあとで送られる

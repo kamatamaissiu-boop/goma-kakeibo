@@ -9,7 +9,7 @@
 export const GAS_URL = "https://script.google.com/macros/s/AKfycbxdp_xKo1NvvfIURDxlb1MsgCZ7YTXP4LLjOx8dUqSKcbCXwb2x-_CFuPEesz4mdIxW0w/exec";
 
 // アプリの版。このファイルを含め、画面のファイルを直したら sw.js の APP_VERSION と一緒に上げる。
-export const APP_VERSION = "0.3.0";
+export const APP_VERSION = "0.4.0";
 
 // 変動費のカテゴリの初期値。ふだんは保存先(`設定` シートの E列)から取った一覧を使い、
 // まだ一度も取れていないときだけ、これを出す。gas/Code.gs の DEFAULT_CATEGORIES と同じ並びにする。

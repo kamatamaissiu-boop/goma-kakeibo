@@ -82,7 +82,9 @@ export async function callApi(action, params = {}, options = {}) {
   }
 
   if (!data || data.ok !== true) {
-    throw new ApiError((data && data.error) || "server");
+    const err = new ApiError((data && data.error) || "server");
+    err.data = data || null; // どの項目がだめだったか(field / reason / id)などを見るため
+    throw err;
   }
   return data;
 }
@@ -146,4 +148,44 @@ export function updateRecord(record) {
  */
 export function deleteRecord(id) {
   return callApi("deleteRecord", { id });
+}
+
+// --- 毎月の設定(保存先が古い版のあいだは、どれも unknown_action になる) -----------
+// 3つとも、成功すると sync と同じ中身(records / monthlyItems / monthlyClosed)が一緒に返る。
+
+/**
+ * 毎月の項目を足す。自分の項目か、共同口座の固定費だけ。
+ * 同じ持ち主・区分・項目名がすでにあれば足さない(duplicate)。停止中なら復活させる(revived)。
+ * @param {{持ち主: string, 区分: string, 項目名: string, 金額: number | null, 毎月かわる: boolean}} item
+ * @returns {Promise<{ok: true, id: string, duplicate: boolean, revived: boolean, monthlyItems: object[]}>}
+ */
+export function addMonthlyItem(item) {
+  return callApi("addMonthlyItem", {
+    持ち主: item["持ち主"],
+    区分: item["区分"],
+    項目名: item["項目名"],
+    金額: item["金額"] || null,
+    毎月かわる: Boolean(item["毎月かわる"]),
+  });
+}
+
+/**
+ * 毎月の項目をなおす・停止する(送ったものだけ変わる。有効: false が停止)。
+ * @param {string} id
+ * @param {{項目名?: string, 金額?: number | null, 毎月かわる?: boolean, 有効?: boolean}} patch
+ * @returns {Promise<{ok: true, id: string, updated: boolean, monthlyItems: object[]}>}
+ */
+export function updateMonthlyItem(id, patch) {
+  return callApi("updateMonthlyItem", { ...patch, id });
+}
+
+/**
+ * 月を確定する(何度送っても、同じ月・同じ項目は1行。金額を書きかえるだけ)。
+ * @param {string} month 'YYYY-MM'
+ * @param {Object<string, number>} amounts 項目id → 金額(正の整数)
+ * @param {string[]} removes その月の記録を消す項目の id
+ * @returns {Promise<{ok: true, 月: string, 確定日時: string, written: number, removed: number}>}
+ */
+export function closeMonth(month, amounts, removes) {
+  return callApi("closeMonth", { 月: month, 金額: amounts, 消す: removes });
 }

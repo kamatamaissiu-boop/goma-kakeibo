@@ -9,6 +9,10 @@ export const KEYS = Object.freeze({
   records: "goma.records",       // 記録の一覧(JSON の配列。前回取得分。候補の表示や「見る」で使う)
   queue: "goma.queue",           // まだ保存先に送れていない操作(JSON の配列。queue.js が使う)
   syncedAt: "goma.syncedAt",     // 記録の一覧を最後に取れた時刻(ミリ秒)。一度も取れていなければ無い
+  monthlyItems: "goma.monthlyItems",   // 毎月の項目(JSON の配列。前回取得分)
+  monthlyClosed: "goma.monthlyClosed", // 月の確定の一覧(JSON の配列。前回取得分)
+  monthlyReady: "goma.monthlyReady",   // 保存先が「毎月の設定」に対応した版か: "1" | "0"(まだ分からなければ無い)
+  monthlyDrafts: "goma.monthlyDrafts", // 毎月の設定の下書き(JSON。「名前|月」→ { 項目id: 入力中の金額 })
 });
 
 // プライベートブラウズなどで localStorage が使えない場合も、画面が止まらないようにする
@@ -75,6 +79,10 @@ export function clearLogin() {
   remove(KEYS.user);
   remove(KEYS.records);
   remove(KEYS.syncedAt);
+  remove(KEYS.monthlyItems);
+  remove(KEYS.monthlyClosed);
+  remove(KEYS.monthlyReady);
+  // 毎月の設定の下書きは消さない(名前ごとに分けてあるので、同じ人が入れ直せば続きから)
 }
 
 function readList(key) {
@@ -118,6 +126,63 @@ export function getSyncedAt() {
 
 export function markSynced() {
   write(KEYS.syncedAt, String(Date.now()));
+}
+
+// --- 毎月の設定 ---------------------------------------------------------------
+
+/** 前回取得した、毎月の項目(固定費・貯蓄・収入・税金のひな形。相手の分も入っている) */
+export function getMonthlyItems() {
+  return readList(KEYS.monthlyItems);
+}
+
+/** 前回取得した、月の確定の一覧({月, 確定した人, 確定日時}) */
+export function getMonthlyClosed() {
+  return readList(KEYS.monthlyClosed);
+}
+
+export function setMonthlyData(items, closed) {
+  write(KEYS.monthlyItems, JSON.stringify(Array.isArray(items) ? items : []));
+  write(KEYS.monthlyClosed, JSON.stringify(Array.isArray(closed) ? closed : []));
+}
+
+/**
+ * 保存先(GAS)が「毎月の設定」に対応した版か。
+ * @returns {boolean | null} null = まだ一度も確かめられていない
+ */
+export function getMonthlyReady() {
+  const value = read(KEYS.monthlyReady);
+  return value === "1" ? true : value === "0" ? false : null;
+}
+
+export function setMonthlyReady(ready) {
+  write(KEYS.monthlyReady, ready ? "1" : "0");
+}
+
+function readDrafts() {
+  try {
+    const all = JSON.parse(read(KEYS.monthlyDrafts) || "{}");
+    return all && typeof all === "object" && !Array.isArray(all) ? all : {};
+  } catch {
+    return {};
+  }
+}
+
+/** 毎月の設定の下書き({ 項目id: 入力中の金額(数字だけの文字。空文字 = 消した) })。なければ空 */
+export function getMonthlyDraft(user, month) {
+  const draft = readDrafts()[`${user}|${month}`];
+  return draft && typeof draft === "object" && !Array.isArray(draft) ? draft : {};
+}
+
+/** 下書きを書く。中身が空なら、その月の下書きを消す。書けなかったら false */
+export function setMonthlyDraft(user, month, draft) {
+  const all = readDrafts();
+  const key = `${user}|${month}`;
+  if (draft && Object.keys(draft).length > 0) {
+    all[key] = draft;
+  } else {
+    delete all[key];
+  }
+  return write(KEYS.monthlyDrafts, JSON.stringify(all));
 }
 
 /** 未送信のキュー(なければ空の配列) */

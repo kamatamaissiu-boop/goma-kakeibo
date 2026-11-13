@@ -4,15 +4,28 @@
 //   - まだ送れていない追加・修正・削除(queue)も重ねて集計する。押した直後でも数字が合う。
 //   - 修正・削除も、入力と同じく「端末のキューに積んで、裏で送る」。待たせない。
 //   - 相手の財布は出さない(共同口座の入金の内訳にある、相手の入金額だけは見える)。
+//   - 「毎月の設定」で確定した固定費・貯蓄も明細に出すが、ここからは直せない(押すと「毎月の設定」へ)。
 //   集計の決まりは summary.js の先頭に書いてある。
 //
 // まだ無いもの(足す場所は index.html にコメントで示してある)
-//   段階3: 「来月、共同口座に入れる目安」 / 段階4: 「今週の肉球スタンプ」、共同口座カードの写真
+//   段階4: 「今週の肉球スタンプ」、共同口座カードの写真
 
 import { DEFAULT_CATEGORIES, WALLET_JOINT } from "./config.js";
 import * as queue from "./queue.js";
 import * as store from "./store.js";
-import { KIND, addMonth, applyQueue, canEdit, filterDetails, monthRange, summarize } from "./summary.js";
+import {
+  KIND,
+  MONTHLY,
+  addMonth,
+  applyQueue,
+  canEdit,
+  estimateNextDeposit,
+  filterDetails,
+  isAuto,
+  monthRange,
+  recordMonth,
+  summarize,
+} from "./summary.js";
 import { digitsOnly, formatAmount, formatDateShort, isDateString, todayString } from "./util.js";
 
 /** 明細を、はじめに何件まで出すか(それ以上は「もっと見る」) */
@@ -29,6 +42,7 @@ const LINE = Object.freeze({
   deleted: "消したにゃ。",
   storage: "この iPhone に書きこめなかったにゃ…。空き容量や、プライベートブラウズになっていないかを見てみてね。",
   dropped: "ごめんにゃ、1件だけ保存先に受けつけてもらえなかったにゃ。最新の内容に戻したにゃ。",
+  needUpdate: "保存先の更新が必要にゃ。それまで、このなおしは「送信待ち」のまま取っておくにゃ（ほかの記録は、ふつうに送れます）。",
   noMonth: "この月のきろくは、まだないにゃ。",
   loading: "さいしんのきろくを、よみこみ中にゃ…",
   loadFailed: "まだ読みこめていないにゃ。電波のよいところで、もういちど開いてみてね。",
@@ -59,12 +73,20 @@ const el = {
   depositBy: $("joint-deposit-by"),
   spend: $("joint-spend"),
   spendRate: $("joint-spend-rate"),
+  spendFixed: $("joint-spend-fixed"),
   // 自分の財布
   walletTitle: $("wallet-title"),
   walletTotal: $("wallet-total"),
   walletNone: $("wallet-none"),
   bars: $("wallet-bars"),
   specials: $("wallet-specials"),
+  extras: $("wallet-extras"),
+  // 来月の目安
+  estimate: $("estimate"),
+  estimateTitle: $("estimate-title"),
+  estimateNums: $("estimate-nums"),
+  estimateFormula: $("estimate-formula"),
+  estimateList: $("estimate-list"),
   walletDeposit: $("wallet-deposit"),
   walletDepositAmount: $("wallet-deposit-amount"),
   walletMore: $("wallet-more"),
@@ -109,6 +131,9 @@ const state = {
   form: null,         // 修正中の入力内容 { wallet: "self"|"joint", kind, category }
   scrollTop: 0,       // 修正を開く前のスクロール位置
 };
+
+/** app.js から受け取る合図(「毎月の設定」を、その月で開く) */
+let hooks = { openMonthly() {} };
 
 // --- 小さな道具 -------------------------------------------------------------
 
@@ -188,13 +213,34 @@ function renderJoint(joint) {
   el.spend.textContent = yen(joint.spend);
   el.spendRate.textContent =
     joint.ratio !== null ? `予定の${Math.round(joint.ratio * 100)}%` : joint.spend > 0 ? "入金がまだ" : "";
+  // 支出に入っている固定費(「毎月の設定」で確定した分)
+  el.spendFixed.hidden = joint.fixed === 0;
+  el.spendFixed.textContent = `うち固定費 ${yen(joint.fixed)}`;
+}
+
+/** 自分の財布のカードの下のほうの1行(固定費・貯蓄・収入) */
+function extraRow(tag, text, note, amount) {
+  const row = node("div", "extra");
+  const left = node("span", "extra__left");
+  if (tag) left.append(node("span", "tag", tag));
+  left.append(document.createTextNode(text));
+  if (note) left.append(node("span", "extra__note", note));
+  row.append(left, node("span", "extra__amount", yen(amount)));
+  return row;
+}
+
+/** 項目のなまえを、短くまとめる: 'A・B・C' / 4つ以上は 'A・B ほか2件' */
+function joinNames(items) {
+  const names = items.map((item) => item.name).filter(Boolean);
+  if (names.length <= 3) return names.join("・");
+  return `${names.slice(0, 2).join("・")} ほか${names.length - 2}件`;
 }
 
 function renderWallet(wallet) {
   el.walletTitle.textContent = `${state.user}の財布`;
   el.walletTotal.textContent = yen(wallet.total);
   el.walletMore.textContent = `${state.user}の財布の明細を見る`;
-  el.walletNone.hidden = wallet.categories.length > 0 || wallet.specials.length > 0;
+  el.walletNone.hidden = wallet.categories.length > 0 || wallet.specials.length > 0 || wallet.fixed.total > 0;
 
   // カテゴリ別の横棒(変動費だけ)。いちばん多いカテゴリを 100% にする
   el.bars.textContent = "";
@@ -224,11 +270,108 @@ function renderWallet(wallet) {
     el.specials.append(row);
   }
 
+  // 固定費は合計に入れるが、グラフには混ぜず、まとめて1行。貯蓄は「貯めたお金」として、合計に入れない。収入も1行
+  el.extras.textContent = "";
+  if (wallet.fixed.total > 0) el.extras.append(extraRow(MONTHLY.FIXED, joinNames(wallet.fixed.items), "", wallet.fixed.total));
+  if (wallet.saving.total > 0) {
+    el.extras.append(extraRow("貯めたお金", joinNames(wallet.saving.items), "（合計には入れていません）", wallet.saving.total));
+  }
+  if (wallet.income > 0) el.extras.append(extraRow("", "収入（手取り）", "", wallet.income));
+  el.extras.hidden = el.extras.children.length === 0;
+
   el.walletDeposit.hidden = wallet.deposit === 0;
   el.walletDepositAmount.textContent = yen(wallet.deposit);
 }
 
+/** 'YYYY-MM' → '11月' */
+function monthName(month) {
+  return `${Number(month.split("-")[1])}月`;
+}
+
+/** 「来月、共同口座に入れる目安」。今月を見ているときだけ出す(来月 = きょうから見た来月なので) */
+function renderEstimate(records) {
+  const today = todayString();
+  const show = state.month === today.slice(0, 7) && store.getMonthlyReady() === true;
+  el.estimate.hidden = !show;
+  if (!show) return;
+
+  const e = estimateNextDeposit({ records, items: store.getMonthlyItems(), user: state.user, today });
+  el.estimateTitle.textContent = `来月（${monthName(e.targetMonth)}）、共同口座に入れる目安`;
+
+  el.estimateNums.textContent = "";
+  if (e.need > 0) {
+    delete el.estimateNums.dataset.tone;
+    const half = node("span", "", "半々なら ");
+    half.append(node("b", "", yen(e.half)));
+    el.estimateNums.append(half);
+    if (e.byIncome) {
+      const ratio = node("span", "", "収入比なら ");
+      ratio.append(node("b", "", yen(e.byIncome.amount)));
+      el.estimateNums.append(ratio);
+    }
+  } else {
+    el.estimateNums.dataset.tone = "none";
+    el.estimateNums.textContent = "まだ計算できないにゃ。「毎月の設定」で、共同口座の固定費を入れてね。";
+  }
+
+  // 検算できるように、計算のもとを小さく出す
+  el.estimateFormula.textContent =
+    e.need > 0
+      ? `必要額 ${yen(e.need)} ＝ 固定費 ${yen(e.fixed.total)} ＋ 変動費の平均 ${yen(e.variable.average)}（合わせて ${yen(e.raw)} を、1,000円単位に切り上げ）`
+      : "";
+  el.estimateFormula.hidden = e.need === 0;
+
+  el.estimateList.textContent = "";
+  const line = (label) => {
+    const li = node("li");
+    li.append(node("b", "", label));
+    el.estimateList.append(li);
+    return li;
+  };
+  const fixed = line("固定費: ");
+  if (e.fixed.items.length === 0) fixed.append("共同口座の固定費の項目がありません");
+  e.fixed.items.forEach((item, i) => {
+    if (i > 0) fixed.append("、");
+    if (item.source === "none") {
+      const warn = node("span", "", `${item.name} 未入力`);
+      warn.dataset.tone = "warn";
+      fixed.append(warn);
+    } else {
+      fixed.append(`${item.name} ${yen(item.amount)}${item.source === "latest" ? `（${monthName(item.month)}の確定額）` : ""}`);
+    }
+  });
+  const variable = line("変動費の平均: ");
+  if (e.variable.basis === "none") {
+    variable.append("共同口座の記録が、まだありません");
+  } else {
+    variable.append(
+      e.variable.months
+        .map((m) =>
+          m.prorated
+            ? `${monthName(m.month)} ${yen(m.amount)}（${m.days}日分の ${yen(m.actual)} を、1か月分に直した額）`
+            : `${monthName(m.month)} ${yen(m.actual)}`
+        )
+        .join("、")
+    );
+    variable.append(
+      e.variable.basis === "past"
+        ? `${e.variable.months.length > 1 ? " の平均" : ""}。先月までの直近3か月で計算（今月は途中なので入れていません）。特別費は入れていません。`
+        : "。先月までの記録がないので、今月の途中までで見積もっています。特別費は入れていません。"
+    );
+  }
+  const ratio = line("収入比: ");
+  ratio.append(
+    e.byIncome
+      ? `${monthName(e.byIncome.month)}に確定した、ふたりの手取りの比で分けた、${state.user}の分（1,000円単位）`
+      : "ふたりとも「毎月の設定」で収入を確定すると、出るようになります"
+  );
+}
+
 function detailMeta(record) {
+  if (isAuto(record)) {
+    // 確定した固定費・貯蓄は、日付ではなく「何月分か」を出す
+    return `${monthName(recordMonth(record))}分・${record["財布"]}・${record["種類"]}`;
+  }
   const date = isDateString(record["日付"]) ? formatDateShort(record["日付"]) : String(record["日付"] || "");
   if (record["種類"] === KIND.DEPOSIT) {
     return `${date}・${record["財布"]}の財布から`;
@@ -248,14 +391,20 @@ function renderDetails(details, pendingIds) {
   el.list.textContent = "";
   for (const record of shown) {
     const editable = canEdit(record, state.user);
-    const row = node(editable ? "button" : "div", "row");
+    const auto = isAuto(record);
+    const row = node(editable || auto ? "button" : "div", "row");
     if (editable) {
       row.type = "button";
       row.dataset.id = record.id;
+    } else if (auto) {
+      // 確定した固定費・貯蓄は、ここでは直せない。押すと「毎月の設定」の、その月へ
+      row.type = "button";
+      row.dataset.monthly = recordMonth(record);
     }
     const main = node("span", "row__main");
     main.append(node("span", "row__label", labelOf(record)));
     const meta = node("span", "row__meta", detailMeta(record));
+    if (auto) meta.append(node("span", "row__auto", "毎月の設定でなおす"));
     if (pendingIds.has(record.id)) meta.append(node("span", "row__pending", "送信待ち"));
     main.append(meta);
     row.append(main, node("span", "row__amount", yen(Number(record["金額"]) || 0)));
@@ -310,6 +459,7 @@ function render() {
 
   renderJoint(result.joint);
   renderWallet(result.wallet);
+  renderEstimate(records);
   renderDetails(result.details, pendingIds);
 }
 
@@ -544,7 +694,12 @@ export function setSyncState(value) {
   if (isShown()) render();
 }
 
-export function initView() {
+/**
+ * @param {object} [callbacks]
+ * @param {(month: string) => void} [callbacks.openMonthly] 「毎月の設定」を、その月で開く
+ */
+export function initView(callbacks = {}) {
+  hooks = { ...hooks, ...callbacks };
   el.prev.addEventListener("click", () => moveMonth(-1));
   el.next.addEventListener("click", () => moveMonth(1));
   for (const button of el.filters) {
@@ -557,7 +712,12 @@ export function initView() {
       return;
     }
     const row = event.target.closest(".row[data-id]");
-    if (row) openEdit(row.dataset.id);
+    if (row) {
+      openEdit(row.dataset.id);
+      return;
+    }
+    const auto = event.target.closest(".row[data-monthly]");
+    if (auto) hooks.openMonthly(auto.dataset.monthly);
   });
   el.more.addEventListener("click", () => {
     state.expanded = true;
@@ -626,6 +786,9 @@ export function initView() {
     } else if (event.type === "dropped" && event.op.op !== "add" && isShown()) {
       // 修正・削除が受けつけられなかった(相手がすでに消していた記録など)。app.js が最新を取り直す
       setNotice(LINE.dropped, "warn");
+    } else if (event.type === "error" && event.code === "unknown_action" && isShown()) {
+      // 保存先(GAS)が古い版で、この操作をまだ知らない。その操作だけ後回しになる(ほかは送られる)
+      setNotice(LINE.needUpdate, "warn");
     }
   });
 }

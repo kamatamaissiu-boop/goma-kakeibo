@@ -1,5 +1,5 @@
 // ごまちゃん家計簿 画面の入口。
-//   - どの画面を出すかを決める(入力 / 見る / 合言葉 / 準備中)
+//   - どの画面を出すかを決める(入力 / 見る / 毎月の設定 / 合言葉)
 //   - 合言葉の登録
 //   - 裏での同期(最新データの取得)と、未送信キューを送り直す合図
 //   - Service Worker の登録
@@ -9,6 +9,7 @@ import { APP_VERSION } from "./config.js";
 import { initInput, onHide, onResume, refreshData, showInput } from "./input.js";
 import * as queue from "./queue.js";
 import * as store from "./store.js";
+import { initMonthly, refreshMonthly, setMonthlyMonth, setMonthlySyncState, showMonthly } from "./monthly.js";
 import { initView, setSyncState, showView } from "./view.js";
 
 // --- 画面の部品 -------------------------------------------------------------
@@ -18,21 +19,19 @@ const el = {
     input: document.getElementById("view-input"),
     view: document.getElementById("view-view"),
     login: document.getElementById("view-login"),
-    soon: document.getElementById("view-soon"),
+    monthly: document.getElementById("view-monthly"),
   },
   status: document.getElementById("connect-status"),
   form: document.getElementById("login-form"),
   input: document.getElementById("aikotoba"),
   button: document.getElementById("login-button"),
   buttonText: document.getElementById("login-button-text"),
-  soonTitle: document.getElementById("soon-title"),
-  soonStatus: document.getElementById("soon-status"),
+  about: document.getElementById("about-status"),
   forget: document.getElementById("forget-button"),
   tabs: Array.from(document.querySelectorAll(".tab")),
   screen: document.getElementById("screen"),
 };
 
-const TAB_TITLES = { input: "入力", view: "見る", monthly: "毎月の設定" };
 const BUTTON_IDLE = "この iPhone を登録する";
 const BUTTON_BUSY = "たしかめています…";
 const LOGIN_PROMPT = "合言葉を入れてね。さいしょの1回だけでだいじょうぶ。";
@@ -53,18 +52,11 @@ function isLoggedIn() {
 /** いまのタブと登録の状態から、出す画面を1つ決める */
 function render() {
   let name;
-  if (currentTab === "monthly") {
-    name = "soon";
-    el.soonTitle.textContent = TAB_TITLES[currentTab] || "";
-    const user = store.getUser();
-    const pending = queue.pendingCount();
-    const lines = [isLoggedIn() ? `${user}のiPhoneとして登録済みです。` : "この iPhone は、まだ登録していません。"];
-    if (pending > 0) lines.push(`まだ送れていない記録が ${pending}件あります(自動で送り直します)。`);
-    lines.push(`版 ${APP_VERSION}`);
-    el.soonStatus.textContent = lines.join("\n");
-    el.forget.hidden = !isLoggedIn();
-  } else if (!isLoggedIn()) {
+  if (!isLoggedIn()) {
     name = "login";
+  } else if (currentTab === "monthly") {
+    name = "monthly";
+    renderAbout();
   } else if (currentTab === "view") {
     name = "view";
   } else {
@@ -74,10 +66,28 @@ function render() {
   for (const [key, view] of Object.entries(el.views)) {
     view.hidden = key !== name;
   }
-  // 「見る」は、見えるようにしてから中身を作る
+  // 「見る」「毎月の設定」は、見えるようにしてから中身を作る
   if (name === "view") {
     showView();
+  } else if (name === "monthly") {
+    showMonthly();
   }
+}
+
+/** 「毎月の設定」のいちばん下の、この iPhone のこと(登録・未送信・版) */
+function renderAbout() {
+  const pending = queue.pendingCount();
+  const lines = [`${store.getUser()}のiPhoneとして登録済みです。`];
+  if (pending > 0) {
+    lines.push(
+      queue.needsUpdate()
+        ? `まだ送れていない記録が ${pending}件あります(保存先の更新が必要なものがあります)。`
+        : `まだ送れていない記録が ${pending}件あります(自動で送り直します)。`
+    );
+  }
+  lines.push(`版 ${APP_VERSION}`);
+  el.about.textContent = lines.join("\n");
+  el.forget.hidden = false;
 }
 
 function selectTab(name) {
@@ -215,11 +225,7 @@ async function syncNow() {
 
     const userChanged = result.user !== store.getUser();
     store.saveLogin({ aikotoba, user: result.user, categories: result.categories });
-    if (Array.isArray(result.records)) {
-      // 取り消しを送っている途中の記録は、一覧に戻さない
-      const deleting = queue.pendingDeleteIds();
-      store.setRecords(result.records.filter((r) => !deleting.includes(r.id)));
-      store.markSynced();
+    if (applyServerData(result)) {
       state = "ok";
     }
     lastSyncAt = Date.now();
@@ -227,6 +233,7 @@ async function syncNow() {
       render();
     } else {
       refreshData();
+      refreshMonthly();
     }
   } catch (err) {
     if (err instanceof ApiError && err.code === "auth") {
@@ -236,11 +243,31 @@ async function syncNow() {
   } finally {
     syncing = false;
     setSyncState(state); // 「見る」が出ていれば、ここで出しなおされる
+    setMonthlySyncState(state);
     if (resyncNeeded) {
       resyncNeeded = false;
       syncNow();
     }
   }
+}
+
+/**
+ * 保存先から返ってきた中身(sync や、月の確定の応答)を、端末に保存する。
+ * @returns {boolean} 記録の一覧が入っていたか
+ */
+function applyServerData(result) {
+  if (!result || !Array.isArray(result.records)) return false;
+  // 取り消しを送っている途中の記録は、一覧に戻さない
+  const deleting = queue.pendingDeleteIds();
+  store.setRecords(result.records.filter((r) => !deleting.includes(r.id)));
+  store.markSynced();
+  // 毎月の項目が入っていなければ、保存先(GAS)が古い版(「毎月の設定」は、更新されるまで使えない)
+  const ready = Array.isArray(result.monthlyItems);
+  store.setMonthlyReady(ready);
+  if (ready) {
+    store.setMonthlyData(result.monthlyItems, result.monthlyClosed);
+  }
+  return true;
 }
 
 /** アプリに戻ってきた・電波が戻った: 未送信を送り直し、古くなっていれば取り直す */
@@ -278,7 +305,24 @@ function registerServiceWorker() {
 // --- 起動 -------------------------------------------------------------------
 
 initInput();
-initView();
+initView({
+  // 明細の、確定した固定費などを押したとき: 「毎月の設定」を、その月で開く
+  openMonthly(month) {
+    setMonthlyMonth(month);
+    selectTab("monthly");
+  },
+});
+initMonthly({
+  applyServerData(result) {
+    applyServerData(result);
+    lastSyncAt = Date.now();
+    // 同期の途中だったら、その結果は確定の前の内容かもしれないので、取り直す
+    if (syncing) resyncNeeded = true;
+    refreshData();
+  },
+  onAuthLost: handleAuthLost,
+  requestSync: syncNow,
+});
 el.form.addEventListener("submit", submitAikotoba);
 el.forget.addEventListener("click", forgetLogin);
 for (const tab of el.tabs) {
@@ -297,6 +341,9 @@ queue.subscribe((event) => {
     } else {
       syncNow();
     }
+  }
+  if (event.type === "change" && currentTab === "monthly" && isLoggedIn()) {
+    renderAbout();
   }
 });
 
