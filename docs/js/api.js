@@ -20,7 +20,7 @@ import { getAikotoba } from "./store.js";
  *   locked         … 合言葉の間違いが続いたので、しばらく受け付けを止めている(10分ほどで戻る)
  *   busy           … 同時書き込みで順番待ちが時間切れ
  *   invalid        … 送った内容がおかしい(金額が 0 など)。送り直しても通らない
- *   forbidden      … 自分が記録したものではないので、取り消せない
+ *   forbidden      … 相手の財布の記録なので、なおしたり消したりできない
  *   unknown_action … 保存先(GAS)が古い版のまま。貼り直しとデプロイが必要
  *   それ以外       … サーバー側のエラー(server / bad_request)
  */
@@ -111,6 +111,24 @@ export function sync() {
  */
 export function addRecord(record) {
   return callApi("addRecord", {
+    id: record.id,
+    日付: record["日付"],
+    財布: record["財布"],
+    種類: record["種類"],
+    項目: record["項目"],
+    メモ: record["メモ"],
+    金額: record["金額"],
+  });
+}
+
+/**
+ * 記録を1件なおす(日付・財布・種類・項目・メモ・金額)。同じ内容を何度送っても安全。
+ * 保存先に無い・削除済みのときも成功が返る(found: false / deleted: true)。
+ * @param {{id: string, 日付: string, 財布: string, 種類: string, 項目: string, メモ: string, 金額: number}} record
+ * @returns {Promise<{ok: true, id: string, found: boolean, updated: boolean, deleted?: boolean}>}
+ */
+export function updateRecord(record) {
+  return callApi("updateRecord", {
     id: record.id,
     日付: record["日付"],
     財布: record["財布"],

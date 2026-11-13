@@ -1,5 +1,5 @@
 // ごまちゃん家計簿 画面の入口。
-//   - どの画面を出すかを決める(入力 / 合言葉 / 準備中)
+//   - どの画面を出すかを決める(入力 / 見る / 合言葉 / 準備中)
 //   - 合言葉の登録
 //   - 裏での同期(最新データの取得)と、未送信キューを送り直す合図
 //   - Service Worker の登録
@@ -9,12 +9,14 @@ import { APP_VERSION } from "./config.js";
 import { initInput, onHide, onResume, refreshData, showInput } from "./input.js";
 import * as queue from "./queue.js";
 import * as store from "./store.js";
+import { initView, setSyncState, showView } from "./view.js";
 
 // --- 画面の部品 -------------------------------------------------------------
 
 const el = {
   views: {
     input: document.getElementById("view-input"),
+    view: document.getElementById("view-view"),
     login: document.getElementById("view-login"),
     soon: document.getElementById("view-soon"),
   },
@@ -27,6 +29,7 @@ const el = {
   soonStatus: document.getElementById("soon-status"),
   forget: document.getElementById("forget-button"),
   tabs: Array.from(document.querySelectorAll(".tab")),
+  screen: document.getElementById("screen"),
 };
 
 const TAB_TITLES = { input: "入力", view: "見る", monthly: "毎月の設定" };
@@ -39,6 +42,7 @@ const SYNC_INTERVAL_MS = 5 * 60 * 1000;
 let currentTab = "input";
 let lastSyncAt = 0;
 let syncing = false;
+let resyncNeeded = false; // 取りに行っているあいだに送信が終わった → 取り直す(古い内容で上書きしないように)
 
 function isLoggedIn() {
   return Boolean(store.getAikotoba() && store.getUser());
@@ -49,7 +53,7 @@ function isLoggedIn() {
 /** いまのタブと登録の状態から、出す画面を1つ決める */
 function render() {
   let name;
-  if (currentTab !== "input") {
+  if (currentTab === "monthly") {
     name = "soon";
     el.soonTitle.textContent = TAB_TITLES[currentTab] || "";
     const user = store.getUser();
@@ -59,14 +63,20 @@ function render() {
     lines.push(`版 ${APP_VERSION}`);
     el.soonStatus.textContent = lines.join("\n");
     el.forget.hidden = !isLoggedIn();
-  } else if (isLoggedIn()) {
+  } else if (!isLoggedIn()) {
+    name = "login";
+  } else if (currentTab === "view") {
+    name = "view";
+  } else {
     name = "input";
     showInput();
-  } else {
-    name = "login";
   }
   for (const [key, view] of Object.entries(el.views)) {
     view.hidden = key !== name;
+  }
+  // 「見る」は、見えるようにしてから中身を作る
+  if (name === "view") {
+    showView();
   }
 }
 
@@ -80,6 +90,7 @@ function selectTab(name) {
     }
   }
   render();
+  el.screen.scrollTop = 0;
 }
 
 /** 合言葉の画面の、状態の1行。tone: "" | "warn" */
@@ -186,6 +197,9 @@ function forgetLogin() {
 async function syncNow() {
   if (syncing || !isConfigured() || !isLoggedIn()) return;
   syncing = true;
+  resyncNeeded = false;
+  setSyncState("loading");
+  let state = "error";
   const aikotoba = store.getAikotoba();
   try {
     let result;
@@ -205,6 +219,8 @@ async function syncNow() {
       // 取り消しを送っている途中の記録は、一覧に戻さない
       const deleting = queue.pendingDeleteIds();
       store.setRecords(result.records.filter((r) => !deleting.includes(r.id)));
+      store.markSynced();
+      state = "ok";
     }
     lastSyncAt = Date.now();
     if (userChanged) {
@@ -219,6 +235,11 @@ async function syncNow() {
     // 電波がない・ロック中などは、前回のデータのまま使いつづける
   } finally {
     syncing = false;
+    setSyncState(state); // 「見る」が出ていれば、ここで出しなおされる
+    if (resyncNeeded) {
+      resyncNeeded = false;
+      syncNow();
+    }
   }
 }
 
@@ -257,6 +278,7 @@ function registerServiceWorker() {
 // --- 起動 -------------------------------------------------------------------
 
 initInput();
+initView();
 el.form.addEventListener("submit", submitAikotoba);
 el.forget.addEventListener("click", forgetLogin);
 for (const tab of el.tabs) {
@@ -266,6 +288,15 @@ for (const tab of el.tabs) {
 queue.subscribe((event) => {
   if (event.type === "error" && event.code === "auth") {
     handleAuthLost();
+  } else if (event.type === "sent" && syncing) {
+    resyncNeeded = true;
+  } else if (event.type === "dropped") {
+    // 受けつけてもらえなかった操作があった(相手の記録だった等)。端末の一覧を、保存先の内容に合わせ直す
+    if (syncing) {
+      resyncNeeded = true;
+    } else {
+      syncNow();
+    }
   }
 });
 

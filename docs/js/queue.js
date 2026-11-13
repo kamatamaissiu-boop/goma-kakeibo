@@ -2,6 +2,7 @@
 //
 // キューの中身(古い順の配列)
 //   { key, op: "add",    user, record: {id, 日付, 財布, 種類, 項目, メモ, 金額}, createdAt, tried }
+//   { key, op: "update", user, record: {id, 日付, 財布, 種類, 項目, メモ, 金額}, createdAt, tried }
 //   { key, op: "delete", user, id, createdAt, tried }
 //     user  … 積んだ人。別の人の合言葉で登録し直した場合に、まちがって送らないため
 //     tried … 1回でも送ろうとしたか(= 保存先に書かれているかもしれないか)
@@ -13,8 +14,9 @@
 //   - 保存先は同じ id を二重に書かないので、何度送り直しても二重にならない。
 //   - 送り直しても通らない失敗(invalid / forbidden)だけは、キューから外して知らせる。
 
-import { ApiError, addRecord, deleteRecord } from "./api.js";
+import { ApiError, addRecord, deleteRecord, updateRecord } from "./api.js";
 import * as store from "./store.js";
+import { toDateTimeString } from "./summary.js";
 import { newId } from "./util.js";
 
 const RETRY_MS = 30000;
@@ -63,6 +65,11 @@ export function pendingRecords() {
     .reverse();
 }
 
+/** 自分の、まだ送れていない操作のすべて(古い順)。「見る」の集計に重ねるために使う */
+export function pendingOps() {
+  return mine(store.getQueue());
+}
+
 /** 自分の、まだ送れていない「取り消し」の id */
 export function pendingDeleteIds() {
   return mine(store.getQueue())
@@ -94,13 +101,42 @@ export function enqueueAdd(record) {
 }
 
 /**
+ * 記録の修正を積んで、すぐ送りはじめる(「見る」の明細から)。
+ *   - その記録の「追加」がまだ一度も送られていない → 追加の中身を差しかえるだけ
+ *   - それ以外 → 「修正」をキューに積む(同じ記録の、まだ送っていない修正があれば置きかえる)
+ * @returns {boolean} 端末に積めたか
+ */
+export function enqueueUpdate(record) {
+  const queue = store.getQueue();
+  const user = store.getUser();
+  const isMine = (op, type) => op.op === type && op.user === user && op.record.id === record.id && !op.tried;
+  const add = queue.find((op) => isMine(op, "add"));
+  if (add) {
+    add.record = { ...record };
+  } else {
+    const index = queue.findIndex((op) => isMine(op, "update"));
+    if (index >= 0) {
+      queue.splice(index, 1);
+    }
+    queue.push({ key: newId(), op: "update", user, record: { ...record }, createdAt: Date.now(), tried: false });
+  }
+  if (!store.setQueue(queue)) {
+    return false;
+  }
+  emit({ type: "change" });
+  flush();
+  return true;
+}
+
+/**
  * 記録を取り消す。
  *   - まだ一度も送っていない → キューから外すだけ(通信なし)
  *   - 送った/送っている途中かもしれない → 「削除」をキューに積む(これも失敗したら送り直す)
  * @returns {"removed" | "queued" | "failed"}
  */
 export function cancel(id) {
-  const queue = store.getQueue();
+  // 消す記録への「修正」は、もう送らなくてよい
+  const queue = store.getQueue().filter((op) => !(op.op === "update" && op.record.id === id));
   const index = queue.findIndex((op) => op.op === "add" && op.record.id === id);
   const wasTried = index >= 0 ? Boolean(queue[index].tried) : true;
   if (index >= 0) {
@@ -171,9 +207,22 @@ async function run() {
         // 取り消されていなければ、前回取得した一覧にも足しておく
         if (store.getQueue().some((o) => o.key === op.key)) {
           const records = store.getRecords().filter((r) => r.id !== op.record.id);
-          records.push({ ...op.record, 記録した人: op.user, 元: "アプリ" });
+          records.push({
+            ...op.record,
+            月: op.record["日付"].slice(0, 7),
+            作成日時: toDateTimeString(op.createdAt || Date.now()),
+            記録した人: op.user,
+            元: "アプリ",
+          });
           store.setRecords(records);
         }
+      } else if (op.op === "update") {
+        await updateRecord(op.record);
+        // 前回取得した一覧も直しておく(そのあいだに消されていたら、何もしない)
+        const month = op.record["日付"].slice(0, 7);
+        store.setRecords(
+          store.getRecords().map((r) => (r.id === op.record.id ? { ...r, ...op.record, 月: month } : r))
+        );
       } else {
         await deleteRecord(op.id);
       }

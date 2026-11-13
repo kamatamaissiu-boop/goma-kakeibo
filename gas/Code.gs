@@ -23,6 +23,11 @@
  *    「デプロイ」→「デプロイを管理」→ 鉛筆(編集)→ バージョン「新バージョン」→「デプロイ」。
  *    (URL は変わらない。「新しいデプロイ」を選ぶと URL が変わってしまうので注意)
  *  - メニュー①(初期設定)をやり直す必要はない。シートは作り直さない。
+ *
+ * 過去データ(Google フォームの回答)の取り込み
+ *  - メニューの「④ フォームの回答を取り込む」を押す。回答シートは読むだけで、書きかえない。
+ *  - 何度押しても二重にならない。アプリで消した記録が、押し直して復活することもない。
+ *  - 「⑤ 月ごとの集計を見る(確認用)」で、月×財布×種類ごとの件数と合計を、いつでも見直せる。
  */
 
 // ============================================================================
@@ -110,6 +115,20 @@ const APP_KINDS = [KIND.VARIABLE, KIND.SPECIAL, KIND.DEPOSIT];
 /** `記録` の「元」列に入れる値(アプリからの記録) */
 const SOURCE_APP = 'アプリ';
 
+/** `記録` の「元」列に入れる値(フォームの回答から取り込んだ記録)と、その id の頭 */
+const SOURCE_FORM = 'フォーム取り込み';
+const FORM_ID_PREFIX = 'form-';
+
+/** フォームの回答の「種類」として取り込むもの */
+const FORM_KINDS = [KIND.VARIABLE, KIND.SPECIAL];
+
+/** 取り込みで、カテゴリ・内容が空だった行に入れておく文字 */
+const FORM_EMPTY_ITEM = '未分類';
+const FORM_EMPTY_MEMO = '(内容なし)';
+
+/** お知らせのダイアログに、1種類につき何行まで出すか(それ以上は「ほか◯件」) */
+const REPORT_MAX_LINES = 30;
+
 /** `記録` の「削除」列に付ける印(行は消さない) */
 const DELETED_MARK = '削除';
 
@@ -134,6 +153,7 @@ const HANDLERS = {
   login: { fn: handleLogin_, lock: false },
   sync: { fn: handleSync_, lock: false },
   addRecord: { fn: handleAddRecord_, lock: true },
+  updateRecord: { fn: handleUpdateRecord_, lock: true },
   deleteRecord: { fn: handleDeleteRecord_, lock: true },
 };
 
@@ -148,6 +168,9 @@ function onOpen() {
     .addItem('① 初期設定(アプリ用シートを作る)', 'setup')
     .addItem('② 合言葉を設定(ゆうき)', 'setAikotobaYuuki')
     .addItem('③ 合言葉を設定(まゆ)', 'setAikotobaMayu')
+    .addSeparator()
+    .addItem('④ フォームの回答を取り込む', 'importFormResponses')
+    .addItem('⑤ 月ごとの集計を見る(確認用)', 'showMonthlySummary')
     .addToUi();
 }
 
@@ -679,7 +702,8 @@ function handleAddRecord_(ctx) {
 /**
  * deleteRecord: 記録を取り消す(「削除」列に印を付ける。行は消さない)。
  *   リクエスト: { id }
- *   自分が記録したものだけ。見つからない・すでに削除済みでも成功を返す(送り直しても安全)。
+ *   消せるのは、自分の財布か共同口座の記録、または自分が記録したもの(canModify_)。
+ *   見つからない・すでに削除済みでも成功を返す(送り直しても安全)。
  */
 function handleDeleteRecord_(ctx) {
   const id = ctx.req.id;
@@ -698,11 +722,80 @@ function handleDeleteRecord_(ctx) {
   if (isDeleted_(row[table.col['削除']])) {
     return { ok: true, id: id, found: true };
   }
-  if (String(row[table.col['記録した人']]).trim() !== ctx.user) {
+  if (!canModify_(table, row, ctx.user)) {
     return { ok: false, error: 'forbidden' };
   }
   table.sheet.getRange(rowNo, table.col['削除'] + 1).setNumberFormat('@').setValue(DELETED_MARK);
   return { ok: true, id: id, found: true };
+}
+
+/**
+ * updateRecord: 記録を1件なおす(日付・月・財布・種類・項目・メモ・金額 を書きかえる)。
+ *   リクエスト: { id, 日付, 財布, 種類, 項目, メモ, 金額 }(中身の決まりは addRecord と同じ)
+ *   なおせるのは、自分の財布か共同口座の記録、または自分が記録したもの(canModify_)。
+ *   作成日時・記録した人・元 は変えない。
+ *   同じ内容を何度送っても結果は同じ。見つからない・削除済みのときは、書かずに成功を返す。
+ */
+function handleUpdateRecord_(ctx) {
+  const checked = validateRecord_(ctx.req, ctx.user);
+  if (checked.field) {
+    return { ok: false, error: 'invalid', field: checked.field };
+  }
+  const record = checked.record;
+
+  const table = openRecords_();
+  if (!table) {
+    return { ok: false, error: 'setup' };
+  }
+  const rowNo = findRecordRow_(table, record.id);
+  if (rowNo < 0) {
+    return { ok: true, id: record.id, found: false, updated: false };
+  }
+  const row = table.values[rowNo - 1];
+  if (isDeleted_(row[table.col['削除']])) {
+    return { ok: true, id: record.id, found: true, deleted: true, updated: false };
+  }
+  if (!canModify_(table, row, ctx.user)) {
+    return { ok: false, error: 'forbidden' };
+  }
+
+  const next = {
+    '日付': record.date,
+    '月': record.date.slice(0, 7),
+    '財布': record.wallet,
+    '種類': record.kind,
+    '項目': record.item,
+    'メモ': record.memo,
+    '金額': record.amount,
+  };
+  // 列は名前で探してあるので、1マスずつ書く(あいだに人が足した列があっても壊さない)
+  let updated = false;
+  Object.keys(next).forEach(function (name) {
+    const c = table.col[name];
+    const isAmount = name === '金額';
+    const same = isAmount ? row[c] === next[name] : typeof row[c] === 'string' && row[c] === next[name];
+    if (same) {
+      return;
+    }
+    table.sheet
+      .getRange(rowNo, c + 1)
+      .setNumberFormat(isAmount ? '#,##0' : '@')
+      .setValue(next[name]);
+    updated = true;
+  });
+  return { ok: true, id: record.id, found: true, updated: updated };
+}
+
+/**
+ * その記録を、この人がなおしたり消したりしてよいか。
+ *   - 財布が本人か共同口座の記録(フォームから取り込んだ共同口座の分は、記録した人が空なので)
+ *   - または、記録した人が本人
+ * 相手の財布の記録は、さわれない。
+ */
+function canModify_(table, row, user) {
+  const wallet = String(row[table.col['財布']]).trim();
+  const by = String(row[table.col['記録した人']]).trim();
+  return wallet === user || wallet === WALLET_JOINT || by === user;
 }
 
 // ============================================================================
@@ -755,6 +848,14 @@ function findRecordRow_(table, id) {
  * シートを作り直さなくてよいように、書式は書き込む行にだけ設定する。
  */
 function appendRecord_(table, record) {
+  appendRecords_(table, [record]);
+}
+
+/** いちばん下に、まとめて足す(1回の書き込みで済ませる)。書式は appendRecord_ の説明のとおり */
+function appendRecords_(table, records) {
+  if (!records.length) {
+    return;
+  }
   const sheet = table.sheet;
   const indexes = HEADERS.RECORDS.map(function (name) {
     return table.col[name];
@@ -765,20 +866,27 @@ function appendRecord_(table, record) {
 
   const values = [];
   const formats = [];
-  for (let i = 0; i < width; i++) {
-    values.push('');
-    formats.push('@');
-  }
-  HEADERS.RECORDS.forEach(function (name) {
-    values[table.col[name] - first] = record[name];
+  records.forEach(function (record) {
+    const rowValues = [];
+    const rowFormats = [];
+    for (let i = 0; i < width; i++) {
+      rowValues.push('');
+      rowFormats.push('@');
+    }
+    HEADERS.RECORDS.forEach(function (name) {
+      rowValues[table.col[name] - first] = record[name];
+    });
+    rowFormats[table.col['金額'] - first] = '#,##0';
+    values.push(rowValues);
+    formats.push(rowFormats);
   });
-  formats[table.col['金額'] - first] = '#,##0';
 
   const rowNo = Math.max(sheet.getLastRow(), 1) + 1;
-  if (rowNo > sheet.getMaxRows()) {
-    sheet.insertRowsAfter(sheet.getMaxRows(), 200);
+  const lastRowNo = rowNo + records.length - 1;
+  if (lastRowNo > sheet.getMaxRows()) {
+    sheet.insertRowsAfter(sheet.getMaxRows(), lastRowNo - sheet.getMaxRows() + 200);
   }
-  sheet.getRange(rowNo, first + 1, 1, width).setNumberFormats([formats]).setValues([values]);
+  sheet.getRange(rowNo, first + 1, records.length, width).setNumberFormats(formats).setValues(values);
 }
 
 /** 削除されていない記録を、すべて返す(型のゆれは、ここでそろえる) */
@@ -963,6 +1071,528 @@ function validateRecord_(req, user) {
   }
 
   return { record: { id: req.id, date: req['日付'], wallet: wallet, kind: kind, item: item, memo: memo, amount: amount } };
+}
+
+// ============================================================================
+// ④ フォームの回答を取り込む / ⑤ 月ごとの集計を見る
+// ============================================================================
+
+/**
+ * フォームの回答シートを読んで、`記録` に足す。
+ *   - 回答シートは読むだけ(getValues / getFormUrl / getName しか呼ばない)。
+ *   - id は回答のタイムスタンプから作るので、何度実行しても二重にならない。
+ *     `記録` にその id の行があれば(削除の印が付いていても)足さない
+ *     → アプリで消した記録が、取り込みのやり直しで復活することはない。
+ */
+function importFormResponses() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!openRecords_()) {
+    notify_('`' + SHEET.RECORDS + '` シートが見つかりません(または列名が足りません)。\nさきに、メニューの「① 初期設定」を実行してください。');
+    return;
+  }
+
+  const found = findFormSheet_(ss);
+  if (!found.sheet) {
+    notify_(found.message);
+    return;
+  }
+  const sheetName = found.sheet.getName();
+  const values = found.sheet.getDataRange().getValues();
+  const mapping = mapFormColumns_(values[0] || []);
+  if (mapping.missing.length) {
+    notify_(
+      '回答シート「' + sheetName + '」で、つぎの列が見つかりませんでした。取り込みは行っていません。\n' +
+        mapping.missing.map(function (name) {
+          return '  ・' + name;
+        }).join('\n') +
+        '\n\n実際の見出し(1行目):\n' +
+        describeHeaders_(values[0] || [])
+    );
+    return;
+  }
+
+  const tz = ss.getSpreadsheetTimeZone() || TZ;
+  const parsed = parseFormRows_(values, mapping.col, tz);
+
+  const result = withLock_(function () {
+    const table = openRecords_();
+    if (!table) {
+      return null;
+    }
+    // 削除の印が付いた行も含めて、すでにある id は足さない
+    const existing = {};
+    for (let r = 1; r < table.values.length; r++) {
+      const id = String(table.values[r][table.col['id']]).trim();
+      if (id) {
+        existing[id] = true;
+      }
+    }
+    const fresh = parsed.records.filter(function (record) {
+      return !existing[record['id']];
+    });
+    appendRecords_(table, fresh);
+    return { added: fresh.length, already: parsed.records.length - fresh.length };
+  });
+  if (!result) {
+    notify_('`' + SHEET.RECORDS + '` シートを読めませんでした。取り込みは行っていません。');
+    return;
+  }
+
+  const lines = [];
+  lines.push('回答シート「' + sheetName + '」から取り込みました。(回答シートは書きかえていません)');
+  lines.push('');
+  lines.push('今回あたらしく取り込んだ: ' + result.added + '件');
+  lines.push('すでに取り込み済みで飛ばした: ' + result.already + '件');
+  lines.push('取り込めずに飛ばした行: ' + parsed.skipped.length + '件');
+  pushLimited_(lines, parsed.skipped.map(function (item) {
+    return '  ・' + item.row + '行目: ' + item.reason;
+  }));
+  if (parsed.notes.length) {
+    lines.push('');
+    lines.push('取り込んだが、確認してほしい行: ' + parsed.notes.length + '件');
+    pushLimited_(lines, parsed.notes.map(function (item) {
+      return '  ・' + item.row + '行目: ' + item.reason;
+    }));
+  }
+  lines.push('');
+  lines.push('使った列: ' + mapping.used.join(' / '));
+  lines.push('');
+  lines.push(buildSummaryText_());
+  notify_(lines.join('\n'));
+}
+
+/** ⑤ `記録` の、削除されていない全件を、月×財布×種類ごとに数えて出す(手集計との照合用) */
+function showMonthlySummary() {
+  if (!openRecords_()) {
+    notify_('`' + SHEET.RECORDS + '` シートが見つかりません(または列名が足りません)。\nさきに、メニューの「① 初期設定」を実行してください。');
+    return;
+  }
+  notify_(buildSummaryText_());
+}
+
+/** 行が多いときは、先頭の REPORT_MAX_LINES 行だけ出して「ほか◯件」とする */
+function pushLimited_(lines, items) {
+  items.slice(0, REPORT_MAX_LINES).forEach(function (text) {
+    lines.push(text);
+  });
+  if (items.length > REPORT_MAX_LINES) {
+    lines.push('  …ほか ' + (items.length - REPORT_MAX_LINES) + '件');
+  }
+}
+
+/** 見出しを比べやすい形にする(全角・半角をそろえ、空白と改行を取る) */
+function normalizeHeader_(value) {
+  return String(value === null || value === undefined ? '' : value).normalize('NFKC').replace(/\s+/g, '');
+}
+
+/** 列番号(0始まり)を A, B, … AA の形にする */
+function columnLetter_(index) {
+  let n = index + 1;
+  let text = '';
+  while (n > 0) {
+    const rest = (n - 1) % 26;
+    text = String.fromCharCode(65 + rest) + text;
+    n = Math.floor((n - 1) / 26);
+  }
+  return text;
+}
+
+/** 見出しの一覧を「A列: タイムスタンプ」の形で並べる */
+function describeHeaders_(headerRow) {
+  const lines = [];
+  headerRow.forEach(function (value, i) {
+    const text = String(value === null || value === undefined ? '' : value).trim();
+    lines.push('  ' + columnLetter_(i) + '列: ' + (text === '' ? '(空)' : text));
+  });
+  return lines.length ? lines.join('\n') : '  (見出しがありません)';
+}
+
+/** 1行目に「タイムスタンプ」と「使用者」を含む見出しがあるか */
+function looksLikeFormSheet_(sheet) {
+  const header = (sheet.getDataRange().getValues()[0] || []).map(normalizeHeader_);
+  const has = function (word) {
+    return header.some(function (name) {
+      return name.indexOf(word) !== -1;
+    });
+  };
+  return has('タイムスタンプ') && has('使用者');
+}
+
+/**
+ * フォームの回答シートを探す(名前は決め打ちしない)。
+ *   1. フォームとつながっているシート(getFormUrl がある)が1つだけなら、それ
+ *   2. 0個または複数のときは、見出しに「タイムスタンプ」「使用者」があるシートが1つだけなら、それ
+ *   3. それでも決まらなければ、理由を message に入れて返す
+ * アプリ用の5シートは、候補にしない。
+ * @return {{sheet: Sheet}|{sheet: null, message: string}}
+ */
+function findFormSheet_(ss) {
+  const appNames = Object.keys(SHEET).map(function (key) {
+    return SHEET[key];
+  });
+  const others = ss.getSheets().filter(function (sheet) {
+    return appNames.indexOf(sheet.getName()) === -1;
+  });
+  const linked = others.filter(function (sheet) {
+    try {
+      return Boolean(sheet.getFormUrl());
+    } catch (err) {
+      return false;
+    }
+  });
+  if (linked.length === 1) {
+    return { sheet: linked[0] };
+  }
+
+  const pool = linked.length > 1 ? linked : others;
+  const byHeader = pool.filter(looksLikeFormSheet_);
+  if (byHeader.length === 1) {
+    return { sheet: byHeader[0] };
+  }
+
+  const names = function (list) {
+    return list.map(function (sheet) {
+      return '「' + sheet.getName() + '」';
+    }).join('、');
+  };
+  if (byHeader.length > 1) {
+    return {
+      sheet: null,
+      message:
+        'フォームの回答シートの候補が複数あって、どれを取り込むか決められませんでした。取り込みは行っていません。\n候補: ' +
+        names(byHeader) +
+        '\n\n取り込むシート以外の名前を教えてもらえれば、対応します。',
+    };
+  }
+  return {
+    sheet: null,
+    message:
+      'フォームの回答シートが見つかりませんでした。取り込みは行っていません。\n' +
+      '(フォームとつながっているシートか、1行目に「タイムスタンプ」と「使用者」があるシートを探しました)\n\n' +
+      'このスプレッドシートにあるシート: ' +
+      (others.length ? names(others) : '(アプリ用のシートだけ)'),
+  };
+}
+
+/**
+ * 回答シートの列を、見出しの名前で探す(完全一致でなく「含む」)。
+ *   「金額を入力」は同じ名前で2つあるので、左から1つ目 = 変動費の金額、2つ目 = 特別費の金額。
+ *   (見出しに「変動」「特別」と書き分けてあれば、そちらを優先する)
+ * @return {{col: Object, missing: string[], used: string[]}}
+ *   col … { timestamp, wallet, kind, category, memo, amountVariable, amountSpecial }(0始まり)
+ */
+function mapFormColumns_(headerRow) {
+  const header = headerRow.map(normalizeHeader_);
+  const taken = {};
+  const col = {};
+  const missing = [];
+  const used = [];
+
+  const take = function (key, label, index) {
+    if (index === -1) {
+      missing.push(label);
+      return;
+    }
+    col[key] = index;
+    taken[index] = true;
+    used.push(label + '=' + columnLetter_(index) + '列');
+  };
+  /** まだ使っていない列から、条件に合う、いちばん左の列を探す */
+  const find = function (test) {
+    for (let i = 0; i < header.length; i++) {
+      if (!taken[i] && header[i] !== '' && test(header[i])) {
+        return i;
+      }
+    }
+    return -1;
+  };
+  const includes = function (word) {
+    return function (name) {
+      return name.indexOf(word) !== -1;
+    };
+  };
+  /** 完全一致を先に、なければ「含む」 */
+  const findWord = function (word) {
+    const exact = find(function (name) {
+      return name === word;
+    });
+    return exact !== -1 ? exact : find(includes(word));
+  };
+
+  take('timestamp', 'タイムスタンプ', findWord('タイムスタンプ'));
+  take('wallet', '使用者', findWord('使用者'));
+
+  // 金額の列(2つ)
+  const amounts = [];
+  header.forEach(function (name, i) {
+    if (!taken[i] && name.indexOf('金額') !== -1) {
+      amounts.push(i);
+    }
+  });
+  let amountVariable = -1;
+  let amountSpecial = -1;
+  if (amounts.length >= 2) {
+    const special = amounts.filter(function (i) {
+      return header[i].indexOf('特別') !== -1;
+    });
+    const variable = amounts.filter(function (i) {
+      return header[i].indexOf('変動') !== -1;
+    });
+    if (special.length === 1 && variable.length === 1 && special[0] !== variable[0]) {
+      amountVariable = variable[0];
+      amountSpecial = special[0];
+    } else {
+      amountVariable = amounts[0];
+      amountSpecial = amounts[1];
+    }
+  } else if (amounts.length === 1) {
+    amountVariable = amounts[0];
+  }
+  take('amountVariable', '金額を入力(1つ目 = 変動費の金額)', amountVariable);
+  take('amountSpecial', '金額を入力(2つ目 = 特別費の金額)', amountSpecial);
+
+  take('kind', '種類', findWord('種類'));
+  take('category', '変動費を入力(カテゴリ)', find(function (name) {
+    return name.indexOf('変動費') !== -1 || name.indexOf('カテゴリ') !== -1;
+  }));
+  take('memo', '特別費内容', find(includes('特別費')));
+
+  return { col: col, missing: missing, used: used };
+}
+
+/**
+ * タイムスタンプを読む。Date 型でも、'2026/10/19 12:34:56' のような文字でもよい。
+ * @return {{dateTime: string, key: string}|null}
+ *   dateTime … 'YYYY-MM-DD HH:mm:ss' / key … id に使う 'YYYYMMDDHHmmssSSS'(ミリ秒まで)
+ */
+function parseFormTimestamp_(value, tz) {
+  if (isDate_(value)) {
+    const ms = ('00' + value.getMilliseconds()).slice(-3);
+    return {
+      dateTime: Utilities.formatDate(value, tz, 'yyyy-MM-dd HH:mm:ss'),
+      key: Utilities.formatDate(value, tz, 'yyyyMMddHHmmss') + ms,
+    };
+  }
+  const text = String(value === null || value === undefined ? '' : value).normalize('NFKC').trim();
+  const m = text.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})(?:[ T]+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$/);
+  if (!m) {
+    return null;
+  }
+  const date = m[1] + '-' + pad2_(m[2]) + '-' + pad2_(m[3]);
+  if (!isValidDateString_(date)) {
+    return null;
+  }
+  const time = [pad2_(m[4] || 0), pad2_(m[5] || 0), pad2_(m[6] || 0)];
+  if (Number(time[0]) > 23 || Number(time[1]) > 59 || Number(time[2]) > 59) {
+    return null;
+  }
+  return {
+    dateTime: date + ' ' + time.join(':'),
+    key: date.replace(/-/g, '') + time.join('') + '000',
+  };
+}
+
+/**
+ * 回答の金額を読む。
+ * @return {{amount: number}|{problem: string}}
+ */
+function parseFormAmount_(value) {
+  if (value === null || value === undefined || String(value).trim() === '') {
+    return { problem: '空' };
+  }
+  let n;
+  if (typeof value === 'number') {
+    n = value;
+  } else {
+    const text = String(value).normalize('NFKC').replace(/[,\s¥\\円]/g, '');
+    n = /^\d+(\.\d+)?$/.test(text) ? Number(text) : NaN;
+  }
+  if (!isFinite(n)) {
+    return { problem: '数値でない(' + String(value).slice(0, 20) + ')' };
+  }
+  if (n === 0) {
+    return { problem: '0' };
+  }
+  if (n < 0 || Math.floor(n) !== n) {
+    return { problem: '正の整数でない(' + n + ')' };
+  }
+  if (n > MAX_AMOUNT) {
+    return { problem: '大きすぎる(' + n + ')' };
+  }
+  return { amount: n };
+}
+
+/** 取り込む文字をととのえる(長すぎる分は切る) */
+function cleanFormText_(value) {
+  const text = String(value === null || value === undefined ? '' : value);
+  const cleaned = cleanText_(Array.from(text.trim()).slice(0, MAX_TEXT_LENGTH).join(''));
+  return cleaned === null ? '' : cleaned;
+}
+
+/**
+ * 回答シートの中身を、`記録` に足す形へ直す(ここでは何も書かない)。
+ * @return {{records: Object[], skipped: Object[], notes: Object[]}}
+ *   skipped / notes は { row: 回答シートの行番号, reason: 理由 }
+ */
+function parseFormRows_(values, col, tz) {
+  const wallets = USERS.concat([WALLET_JOINT]);
+  const records = [];
+  const skipped = [];
+  const notes = [];
+  const seen = {}; // 同じタイムスタンプが何回出てきたか
+
+  for (let r = 1; r < values.length; r++) {
+    const row = values[r];
+    const rowNo = r + 1;
+    const blank = row.every(function (cell) {
+      return cell === null || cell === undefined || String(cell).trim() === '';
+    });
+    if (blank) {
+      continue; // 空の行は、だまって飛ばす
+    }
+
+    const stamp = parseFormTimestamp_(row[col.timestamp], tz);
+    if (!stamp) {
+      skipped.push({ row: rowNo, reason: 'タイムスタンプが読めない' });
+      continue;
+    }
+    // id: 同じタイムスタンプが複数あっても重ならないよう、2つ目からは -2, -3 … を付ける。
+    // (飛ばす行も数に入れる。あとでその行が直されても、ほかの行の id がずれないように)
+    seen[stamp.key] = (seen[stamp.key] || 0) + 1;
+    const id = FORM_ID_PREFIX + stamp.key + (seen[stamp.key] > 1 ? '-' + seen[stamp.key] : '');
+
+    const wallet = String(row[col.wallet]).normalize('NFKC').trim();
+    if (wallets.indexOf(wallet) === -1) {
+      skipped.push({ row: rowNo, reason: '使用者が不明(' + (wallet === '' ? '空' : wallet.slice(0, 20)) + ')' });
+      continue;
+    }
+    const kind = String(row[col.kind]).normalize('NFKC').trim();
+    if (FORM_KINDS.indexOf(kind) === -1) {
+      skipped.push({ row: rowNo, reason: '種類が不明(' + (kind === '' ? '空' : kind.slice(0, 20)) + ')' });
+      continue;
+    }
+
+    const isVariable = kind === KIND.VARIABLE;
+    const amount = parseFormAmount_(row[isVariable ? col.amountVariable : col.amountSpecial]);
+    if (amount.problem) {
+      // もう片方の金額の列に数字があれば、手で確かめやすいように書き添える
+      const other = parseFormAmount_(row[isVariable ? col.amountSpecial : col.amountVariable]);
+      const hint = other.problem ? '' : '。' + (isVariable ? '特別費' : '変動費') + 'の金額の列には ' + other.amount + ' あり';
+      skipped.push({ row: rowNo, reason: kind + 'の金額が' + amount.problem + hint });
+      continue;
+    }
+
+    let item = '';
+    let memo = '';
+    if (isVariable) {
+      item = cleanFormText_(row[col.category]);
+      if (!item) {
+        item = FORM_EMPTY_ITEM;
+        notes.push({ row: rowNo, reason: 'カテゴリが空だったので「' + FORM_EMPTY_ITEM + '」として取り込み' });
+      }
+    } else {
+      memo = cleanFormText_(row[col.memo]);
+      if (!memo) {
+        memo = FORM_EMPTY_MEMO;
+        notes.push({ row: rowNo, reason: '特別費の内容が空だったので「' + FORM_EMPTY_MEMO + '」として取り込み' });
+      }
+    }
+
+    const date = stamp.dateTime.slice(0, 10);
+    records.push({
+      'id': id,
+      '作成日時': stamp.dateTime,
+      '日付': date,
+      '月': date.slice(0, 7),
+      '財布': wallet,
+      '種類': kind,
+      '項目': item,
+      'メモ': memo,
+      '金額': amount.amount,
+      '記録した人': wallet === WALLET_JOINT ? '' : wallet,
+      '元': SOURCE_FORM,
+      '削除': '',
+    });
+  }
+  return { records: records, skipped: skipped, notes: notes };
+}
+
+/** 1200 → '¥1,200' */
+function yen_(n) {
+  return '¥' + String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+/**
+ * `記録` の削除されていない全件を、月×財布×種類ごとに数える。
+ * @return {Object[]} { month, wallet, kind, count, total, formCount, formTotal }(月 → 財布 → 種類 の順)
+ */
+function summarizeRecords_(table) {
+  const groups = {};
+  listRecords_(table).forEach(function (record) {
+    const key = [record['月'], record['財布'], record['種類']].join('\t');
+    if (!groups[key]) {
+      groups[key] = { month: record['月'], wallet: record['財布'], kind: record['種類'], count: 0, total: 0, formCount: 0, formTotal: 0 };
+    }
+    const g = groups[key];
+    g.count += 1;
+    g.total += record['金額'];
+    if (record['元'] === SOURCE_FORM) {
+      g.formCount += 1;
+      g.formTotal += record['金額'];
+    }
+  });
+
+  const walletOrder = USERS.concat([WALLET_JOINT]);
+  const kindOrder = [KIND.VARIABLE, KIND.SPECIAL, KIND.DEPOSIT];
+  const rank = function (list, value) {
+    const i = list.indexOf(value);
+    return i === -1 ? list.length : i;
+  };
+  return Object.keys(groups)
+    .map(function (key) {
+      return groups[key];
+    })
+    .sort(function (a, b) {
+      if (a.month !== b.month) {
+        return a.month < b.month ? -1 : 1;
+      }
+      const w = rank(walletOrder, a.wallet) - rank(walletOrder, b.wallet);
+      if (w !== 0) {
+        return w;
+      }
+      const k = rank(kindOrder, a.kind) - rank(kindOrder, b.kind);
+      if (k !== 0) {
+        return k;
+      }
+      return a.wallet + a.kind < b.wallet + b.kind ? -1 : 1;
+    });
+}
+
+/** 集計を、お知らせに出す文字にする */
+function buildSummaryText_() {
+  const table = openRecords_();
+  if (!table) {
+    return '`' + SHEET.RECORDS + '` シートを読めませんでした。';
+  }
+  const rows = summarizeRecords_(table);
+  const lines = ['【月ごとの集計】`' + SHEET.RECORDS + '` の、削除されていない全件', '月 / 財布 / 種類: 件数 合計(うち フォーム取り込み分)'];
+  if (!rows.length) {
+    lines.push('', '記録は、まだありません。');
+    return lines.join('\n');
+  }
+  let month = null;
+  rows.forEach(function (g) {
+    if (g.month !== month) {
+      month = g.month;
+      lines.push('', '■ ' + (month || '(月が空)'));
+    }
+    lines.push(
+      '  ' + (g.wallet || '(財布が空)') + ' / ' + (g.kind || '(種類が空)') + ': ' +
+        g.count + '件 ' + yen_(g.total) +
+        '(うちフォーム ' + g.formCount + '件 ' + yen_(g.formTotal) + ')'
+    );
+  });
+  return lines.join('\n');
 }
 
 // ============================================================================

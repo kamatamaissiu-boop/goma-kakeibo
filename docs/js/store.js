@@ -8,6 +8,7 @@ export const KEYS = Object.freeze({
   wallet: "goma.wallet",         // 入力画面で前回えらんだ財布: "self" | "joint"
   records: "goma.records",       // 記録の一覧(JSON の配列。前回取得分。候補の表示や「見る」で使う)
   queue: "goma.queue",           // まだ保存先に送れていない操作(JSON の配列。queue.js が使う)
+  syncedAt: "goma.syncedAt",     // 記録の一覧を最後に取れた時刻(ミリ秒)。一度も取れていなければ無い
 });
 
 // プライベートブラウズなどで localStorage が使えない場合も、画面が止まらないようにする
@@ -73,6 +74,7 @@ export function clearLogin() {
   remove(KEYS.aikotoba);
   remove(KEYS.user);
   remove(KEYS.records);
+  remove(KEYS.syncedAt);
 }
 
 function readList(key) {
@@ -107,6 +109,15 @@ export function getRecords() {
 
 export function setRecords(records) {
   return write(KEYS.records, JSON.stringify(Array.isArray(records) ? records : []));
+}
+
+/** 記録の一覧を最後に取れた時刻(ミリ秒)。一度も取れていなければ 0 */
+export function getSyncedAt() {
+  return Number(read(KEYS.syncedAt)) || 0;
+}
+
+export function markSynced() {
+  write(KEYS.syncedAt, String(Date.now()));
 }
 
 /** 未送信のキュー(なければ空の配列) */

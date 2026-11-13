@@ -52,6 +52,12 @@
     <path d="M9 3v4"></path>
     <path d="M15 3v4"></path>
   </symbol>
+  <symbol id="i-prev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M15 5l-7 7 7 7"></path>
+  </symbol>
+  <symbol id="i-next" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M9 5l7 7-7 7"></path>
+  </symbol>
 </svg>
 
 <div class="app">
@@ -155,6 +161,172 @@
       </form>
     </section>
 
+    <!-- ===== 見る(仕様書 4.2) ===== -->
+    <section class="view view--look" id="view-view" aria-label="見る" hidden>
+
+      <div class="look" id="look-main">
+        <!-- 月の切り替え -->
+        <div class="month">
+          <button class="month__btn" id="month-prev" type="button" aria-label="前の月">
+            <svg aria-hidden="true" width="24" height="24"><use href="#i-prev"></use></svg>
+          </button>
+          <h1 class="month__title" id="month-title"></h1>
+          <button class="month__btn" id="month-next" type="button" aria-label="次の月">
+            <svg aria-hidden="true" width="24" height="24"><use href="#i-next"></use></svg>
+          </button>
+        </div>
+
+        <!-- 「なおしたにゃ」などの一言(あるときだけ) -->
+        <p class="look__notice" id="look-notice" role="status" aria-live="polite" hidden></p>
+
+        <!-- 記録が1件もない月・読み込み前 -->
+        <div class="card look-empty" id="look-empty" hidden>
+          <img class="look-empty__goma" src="img/goma-round.svg" alt="ごまちゃん" width="105" height="100">
+          <p class="look-empty__text" id="look-empty-text"></p>
+        </div>
+
+        <div class="look__cards" id="look-cards">
+
+          <!-- 共同口座のカード。
+               写真は段階4でアルバムの写真に差し替える: #joint-photo-img の src に入れて hidden を外し、
+               #joint-photo の data-state を "photo" にする。いまは仮の絵 -->
+          <section class="card joint" aria-labelledby="joint-label">
+            <div class="joint__head">
+              <div class="joint__photo" id="joint-photo" data-state="placeholder">
+                <img class="joint__photo-img" id="joint-photo-img" alt="" hidden>
+                <img class="joint__goma" src="img/goma-round.svg" alt="" aria-hidden="true" width="76" height="72">
+              </div>
+              <div class="joint__main">
+                <div class="label" id="joint-label">共同口座の残り</div>
+                <div class="joint__remain" id="joint-remain"></div>
+                <div class="joint__line" id="joint-line"></div>
+              </div>
+            </div>
+            <!-- ゲージ: 支出 ÷ 入金。先頭のごまちゃんが、使った分だけ進む(--p は 0〜1) -->
+            <div class="gauge" id="gauge" role="img">
+              <div class="gauge__track"><div class="gauge__fill"></div></div>
+              <img class="gauge__goma" src="img/goma-round.svg" alt="" aria-hidden="true" width="32" height="30">
+            </div>
+            <div class="joint__nums">
+              <div class="joint__col">
+                <div class="label">入金</div>
+                <div class="joint__num" id="joint-deposit"></div>
+                <div class="joint__sub" id="joint-deposit-by"></div>
+              </div>
+              <div class="joint__col">
+                <div class="label">支出</div>
+                <div class="joint__num" id="joint-spend"></div>
+                <div class="joint__sub" id="joint-spend-rate"></div>
+              </div>
+            </div>
+            <button class="card__more" type="button" data-details="joint">共同口座の明細を見る</button>
+          </section>
+
+          <!-- (段階4)「今週の肉球スタンプ」のカードは、ここに足す -->
+
+          <!-- 自分の財布のカード: 合計、カテゴリ別の横棒(変動費)、特別費は1行ずつ -->
+          <section class="card wallet" aria-labelledby="wallet-title">
+            <div class="wallet__head">
+              <h2 class="card__title" id="wallet-title"></h2>
+              <div class="wallet__total" id="wallet-total"></div>
+            </div>
+            <p class="wallet__none" id="wallet-none" hidden>この月は、まだ使っていないにゃ。</p>
+            <div class="bars" id="wallet-bars"></div>
+            <div class="specials" id="wallet-specials"></div>
+            <div class="wallet__deposit" id="wallet-deposit" hidden>
+              <span>共同口座へ入金<span class="wallet__deposit-note">（合計には入れていません）</span></span>
+              <span class="wallet__deposit-amount" id="wallet-deposit-amount"></span>
+            </div>
+            <button class="card__more" type="button" data-details="self" id="wallet-more"></button>
+          </section>
+
+          <!-- (段階3)「来月、共同口座に入れる目安」のカードは、ここに足す -->
+
+          <!-- 明細: その月の、自分の財布と共同口座の記録。行を押すと、なおす・消す -->
+          <section class="card details" id="details" aria-labelledby="details-title">
+            <div class="details__head">
+              <h2 class="card__title" id="details-title">明細</h2>
+              <div class="details__hint">押すと、なおせます</div>
+            </div>
+            <div class="filters" id="details-filters" role="group" aria-label="明細のしぼりこみ">
+              <button class="filter" type="button" data-filter="all" aria-pressed="true">すべて</button>
+              <button class="filter" type="button" data-filter="self" aria-pressed="false" id="filter-self"></button>
+              <button class="filter" type="button" data-filter="joint" aria-pressed="false">共同口座</button>
+            </div>
+            <p class="details__none" id="details-none" hidden>ここに出す記録は、まだないにゃ。</p>
+            <ul class="details__list" id="details-list"></ul>
+            <button class="btn details__more" id="details-more" type="button" hidden></button>
+          </section>
+
+        </div>
+      </div>
+
+      <!-- 明細の修正(明細の行を押すと、上の中身と入れ替わって出る) -->
+      <form class="edit" id="edit" novalidate autocomplete="off" hidden>
+        <div class="month">
+          <button class="month__btn" id="edit-back" type="button" aria-label="もどる">
+            <svg aria-hidden="true" width="24" height="24"><use href="#i-prev"></use></svg>
+          </button>
+          <h1 class="month__title">きろくをなおす</h1>
+          <span class="month__btn" aria-hidden="true"></span>
+        </div>
+        <p class="edit__meta" id="edit-meta"></p>
+
+        <div class="field">
+          <label class="label" for="edit-date">日付</label>
+          <input class="input input--date" id="edit-date" name="edit-date" type="date" required>
+        </div>
+
+        <div class="field">
+          <div class="label" id="edit-wallet-label">だれの財布</div>
+          <div class="choices choices--2" id="edit-wallets" role="group" aria-labelledby="edit-wallet-label">
+            <button class="choice" type="button" data-wallet="self" aria-pressed="true">自分</button>
+            <button class="choice" type="button" data-wallet="joint" aria-pressed="false">共同口座</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="label" id="edit-kind-label">種類</div>
+          <div class="choices choices--3 choices--kind" id="edit-kinds" role="group" aria-labelledby="edit-kind-label">
+            <button class="choice" type="button" data-kind="変動費" aria-pressed="true">変動費</button>
+            <button class="choice" type="button" data-kind="特別費" aria-pressed="false">特別費</button>
+            <button class="choice" type="button" data-kind="共同へ入金" aria-pressed="false">共同へ入金</button>
+          </div>
+        </div>
+
+        <div class="field" id="edit-field-category">
+          <div class="label" id="edit-category-label">カテゴリ</div>
+          <div class="choices choices--3" id="edit-categories" role="group" aria-labelledby="edit-category-label"></div>
+        </div>
+
+        <div class="field" id="edit-field-memo" hidden>
+          <label class="label" for="edit-memo">特別費の内容</label>
+          <input class="input" id="edit-memo" name="edit-memo" type="text" maxlength="60" enterkeyhint="done" autocomplete="off">
+        </div>
+
+        <p class="note" id="edit-deposit-note" hidden></p>
+
+        <div class="field">
+          <label class="label" for="edit-amount">金額</label>
+          <div class="amount" id="edit-amount-box">
+            <span class="amount__yen" aria-hidden="true">¥</span>
+            <input class="amount__input" id="edit-amount" name="edit-amount" type="text" inputmode="numeric" pattern="[0-9,]*"
+                   autocomplete="off" enterkeyhint="done" placeholder="0" maxlength="10">
+          </div>
+        </div>
+
+        <p class="edit__error" id="edit-error" role="alert" hidden></p>
+
+        <div class="edit__buttons">
+          <button class="btn btn--primary" id="edit-save" type="submit">
+            <svg class="btn__paw" aria-hidden="true" width="20" height="20" fill="currentColor"><use href="#i-paw"></use></svg>
+            <span>なおす</span>
+          </button>
+          <button class="btn btn--danger" id="edit-delete" type="button">このきろくを消す</button>
+        </div>
+      </form>
+    </section>
+
     <!-- ===== 合言葉の入力(初回だけ) ===== -->
     <section class="view view--plain" id="view-login" aria-label="合言葉" hidden>
       <div class="hero">
@@ -180,7 +352,7 @@
       </div>
     </section>
 
-    <!-- ===== 準備中の画面(「見る」「毎月の設定」) ===== -->
+    <!-- ===== 準備中の画面(「毎月の設定」) ===== -->
     <section class="view view--plain" id="view-soon" aria-labelledby="soon-title" hidden>
       <div class="hero">
         <h1 class="hero__title" id="soon-title"></h1>
@@ -200,7 +372,19 @@
 
   </main>
 
-  <!-- 下のタブ(「見る」「毎月の設定」は準備中の画面を出す) -->
+  <!-- 確認のダイアログ(記録を消すとき)。ブラウザの confirm は使わない -->
+  <div class="dialog-backdrop" id="confirm" hidden>
+    <div class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-what">
+      <p class="dialog__title" id="confirm-title">このきろくを消すにゃ？</p>
+      <p class="dialog__what" id="confirm-what"></p>
+      <div class="dialog__buttons">
+        <button class="btn" id="confirm-no" type="button">やめる</button>
+        <button class="btn btn--danger-fill" id="confirm-yes" type="button">消す</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 下のタブ(「毎月の設定」は準備中の画面を出す) -->
   <nav class="tabs" aria-label="メニュー">
     <button class="tab" type="button" data-tab="input" aria-current="page">
       <svg class="tab__ears" aria-hidden="true" width="30" height="9"><use href="#i-ears"></use></svg>

@@ -675,6 +675,595 @@ p {
   }
 }
 
+/* --- 見る画面(寸法は見本 HTML 4 のとおり) -------------------------------- */
+
+.view--look {
+  padding: calc(var(--safe-top) + 8px) calc(var(--safe-right) + var(--gutter)) 16px calc(var(--safe-left) + var(--gutter));
+}
+
+.look,
+.look__cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 月の切り替え(修正画面の見出しにも使う) */
+.month {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  height: 44px;
+}
+
+.month__title {
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.month__btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--c-ink);
+  cursor: pointer;
+}
+
+.month__btn:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
+/* 「なおしたにゃ」などの一言 */
+.look__notice {
+  padding: 10px 16px;
+  border-radius: var(--r-control);
+  background: var(--c-cream);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.look__notice[data-tone="warn"] {
+  color: var(--c-pink-dark);
+}
+
+/* 記録が1件もない月・読み込み前 */
+.look-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 36px 16px;
+  text-align: center;
+}
+
+.look-empty__goma {
+  width: 105px;
+  height: auto;
+}
+
+.look-empty__text {
+  font-size: 15px;
+  font-weight: 500;
+}
+
+/* カードの共通 */
+.view--look .card {
+  display: flex;
+  flex-direction: column;
+  padding: 14px 16px;
+}
+
+.card__title {
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+/* カードの下の「明細を見る」 */
+.card__more {
+  align-self: flex-end;
+  min-height: var(--tap);
+  margin: -4px -8px -12px 0;
+  padding: 0 8px;
+  border: none;
+  background: transparent;
+  color: var(--c-gray);
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* 共同口座のカード */
+.joint {
+  gap: 10px;
+}
+
+.joint__head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* 写真の枠(92px 角)。段階4で写真に差し替える。いまは仮の絵 */
+.joint__photo {
+  position: relative;
+  flex-shrink: 0;
+  width: 92px;
+  height: 92px;
+  overflow: hidden;
+  border-radius: 20px;
+  background: var(--c-amber-light);
+}
+
+.joint__photo-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.joint__goma {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 76px;
+  height: auto;
+  transform: translate(-50%, -46%);
+}
+
+.joint__photo[data-state="photo"] .joint__goma {
+  display: none;
+}
+
+.joint__main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.joint__remain {
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.joint__remain[data-minus] {
+  color: var(--c-pink-dark);
+}
+
+.joint__line {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--c-gray);
+}
+
+/* ゲージ: --p(0〜1)= 支出 ÷ 入金。ごまちゃん(幅 32px)が、はみ出さずに左端から右端まで進む */
+.gauge {
+  --p: 0;
+  position: relative;
+  height: 30px;
+}
+
+.gauge__track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 11px;
+  height: 10px;
+  overflow: hidden;
+  border-radius: 5px;
+  background: #EDE6DC;
+}
+
+.gauge__fill {
+  width: calc((100% - 32px) * var(--p) + 16px + 16px * var(--p));
+  height: 10px;
+  border-radius: 5px;
+  background: var(--c-amber);
+  transition: width 0.3s ease;
+}
+
+.gauge__goma {
+  position: absolute;
+  left: calc((100% - 32px) * var(--p));
+  top: 0;
+  width: 32px;
+  height: 30px;
+  transition: left 0.3s ease;
+}
+
+/* まだ動きがない月は、色を塗らない / 使いすぎは注意の色 */
+.gauge[data-state="empty"] .gauge__fill {
+  width: 0;
+}
+
+.gauge[data-state="over"] .gauge__fill,
+.gauge[data-state="nodeposit"] .gauge__fill {
+  background: var(--c-pink-dark);
+}
+
+.joint__nums {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.joint__col {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.joint__num {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.joint__sub {
+  min-height: 18px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--c-gray);
+}
+
+/* 自分の財布のカード */
+.wallet {
+  gap: 9px;
+}
+
+.wallet__head,
+.details__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.wallet__total {
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.wallet__none,
+.details__none {
+  font-size: 14px;
+  color: var(--c-gray);
+}
+
+.bars {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.bars:empty {
+  display: none;
+}
+
+.bar {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.bar__head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.bar__name {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.paw-mark {
+  display: flex;
+  flex-shrink: 0;
+  color: var(--c-amber-dark);
+}
+
+.bar__amount,
+.special__amount,
+.wallet__deposit-amount {
+  flex-shrink: 0;
+  font-weight: 700;
+}
+
+.bar__track {
+  height: 8px;
+  border-radius: 4px;
+  background: #EDE6DC;
+}
+
+.bar__fill {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--c-silver-dark);
+}
+
+/* 特別費: グラフに混ぜず、書いた内容のまま1行ずつ */
+.specials {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid #EDE6DC;
+}
+
+.bars:empty + .specials {
+  padding-top: 0;
+  border-top: none;
+}
+
+.special,
+.wallet__deposit {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.special__left {
+  min-width: 0;
+}
+
+.special__memo {
+  overflow-wrap: anywhere;
+}
+
+.tag {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 6px;
+  border: 1px solid #CFC4B6;
+  border-radius: 6px;
+  color: var(--c-gray);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+/* 共同口座へ入れた分(合計には入れず、別の行で見せる) */
+.wallet__deposit {
+  padding-top: 8px;
+  border-top: 1px solid #EDE6DC;
+}
+
+.wallet__deposit-note {
+  font-size: 11px;
+  color: var(--c-gray);
+}
+
+/* 明細 */
+.details {
+  gap: 8px;
+  scroll-margin-top: calc(var(--safe-top) + 8px);
+}
+
+.details__hint {
+  font-size: 12px;
+  color: var(--c-gray);
+}
+
+.filters {
+  display: flex;
+  gap: 8px;
+}
+
+/* 押しやすいように、見た目(36px)より上下に広く反応させる(44px) */
+.filter {
+  position: relative;
+  min-width: 0;
+  height: 36px;
+  padding: 0 14px;
+  border: 1.5px solid var(--c-line);
+  border-radius: 18px;
+  background: var(--c-white);
+  color: var(--c-ink);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.filter::after {
+  content: "";
+  position: absolute;
+  inset: -5px 0;
+}
+
+.filter[aria-pressed="true"] {
+  border-color: var(--c-ink);
+  background: var(--c-ink);
+  color: var(--c-white);
+}
+
+.details__list {
+  margin: 0 -16px;
+  padding: 0;
+  list-style: none;
+}
+
+.details__item + .details__item .row {
+  border-top: 1px solid #EDE6DC;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 56px;
+  padding: 8px 16px;
+  border: none;
+  background: transparent;
+  color: var(--c-ink);
+  font-size: 14px;
+  line-height: 1.5;
+  text-align: left;
+}
+
+button.row {
+  cursor: pointer;
+}
+
+button.row:active {
+  background: var(--c-bg);
+}
+
+.row__main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.row__label {
+  font-size: 15px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.row__meta {
+  font-size: 12px;
+  color: var(--c-gray);
+}
+
+.row__pending {
+  margin-left: 6px;
+  color: var(--c-pink-dark);
+  font-weight: 700;
+}
+
+.row__amount {
+  flex-shrink: 0;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.details__more {
+  margin-top: 2px;
+}
+
+/* --- 明細の修正 --------------------------------------------------------- */
+
+.edit {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.edit__meta {
+  font-size: 12px;
+  color: var(--c-gray);
+}
+
+/* 日付の入力欄(iPhone で中央寄せ・はみ出しにならないように) */
+.input--date {
+  min-width: 0;
+  text-align: left;
+  line-height: 49px;
+}
+
+.input--date::-webkit-date-and-time-value {
+  text-align: left;
+}
+
+.edit__error {
+  color: var(--c-pink-dark);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.edit__buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.btn--danger {
+  border-color: transparent;
+  background: transparent;
+  color: var(--c-pink-dark);
+  text-decoration: underline;
+}
+
+.btn--danger-fill {
+  border-color: var(--c-pink-dark);
+  background: var(--c-pink-dark);
+  color: var(--c-white);
+}
+
+/* --- 確認のダイアログ --------------------------------------------------- */
+
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px calc(var(--safe-right) + 24px) calc(var(--safe-bottom) + 24px) calc(var(--safe-left) + 24px);
+  background: rgba(46, 42, 40, 0.45);
+}
+
+.dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  max-width: 340px;
+  padding: 20px 16px 16px;
+  border-radius: var(--r-card);
+  background: var(--c-white);
+}
+
+.dialog__title {
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.dialog__what {
+  font-size: 14px;
+  color: var(--c-gray);
+  overflow-wrap: anywhere;
+}
+
+.dialog__buttons {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.dialog__buttons .btn {
+  min-height: 48px;
+}
+
 /* --- 下のタブ(猫耳タブ) ------------------------------------------------- */
 
 .tabs {
