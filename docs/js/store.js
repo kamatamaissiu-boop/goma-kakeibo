@@ -5,6 +5,9 @@ export const KEYS = Object.freeze({
   aikotoba: "goma.aikotoba",     // 合言葉(初回に入れたもの。以降の通信で毎回使う)
   user: "goma.user",             // この iPhone の持ち主: "ゆうき" | "まゆ"
   categories: "goma.categories", // 変動費のカテゴリ一覧(JSON の配列。前回取得分)
+  wallet: "goma.wallet",         // 入力画面で前回えらんだ財布: "self" | "joint"
+  records: "goma.records",       // 記録の一覧(JSON の配列。前回取得分。候補の表示や「見る」で使う)
+  queue: "goma.queue",           // まだ保存先に送れていない操作(JSON の配列。queue.js が使う)
 });
 
 // プライベートブラウズなどで localStorage が使えない場合も、画面が止まらないようにする
@@ -62,8 +65,56 @@ export function saveLogin({ aikotoba, user, categories }) {
   return ok;
 }
 
-/** この iPhone の登録を消す(合言葉を入れ直すとき) */
+/**
+ * この iPhone の登録を消す(合言葉を入れ直すとき)。
+ * 前回取得した記録も消す。未送信のキューは消さない(同じ人が入れ直せば、あとで送られる)。
+ */
 export function clearLogin() {
   remove(KEYS.aikotoba);
   remove(KEYS.user);
+  remove(KEYS.records);
+}
+
+function readList(key) {
+  try {
+    const list = JSON.parse(read(key) || "[]");
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+
+/** カテゴリ一覧だけを覚え直す */
+export function saveCategories(categories) {
+  if (Array.isArray(categories)) {
+    write(KEYS.categories, JSON.stringify(categories));
+  }
+}
+
+/** 前回えらんだ財布("self" = 自分 / "joint" = 共同口座)。初期値は自分 */
+export function getWallet() {
+  return read(KEYS.wallet) === "joint" ? "joint" : "self";
+}
+
+export function setWallet(wallet) {
+  write(KEYS.wallet, wallet === "joint" ? "joint" : "self");
+}
+
+/** 前回取得した記録の一覧(なければ空の配列) */
+export function getRecords() {
+  return readList(KEYS.records);
+}
+
+export function setRecords(records) {
+  return write(KEYS.records, JSON.stringify(Array.isArray(records) ? records : []));
+}
+
+/** 未送信のキュー(なければ空の配列) */
+export function getQueue() {
+  return readList(KEYS.queue);
+}
+
+/** 未送信のキューを書く。書けなかったら false(容量不足・プライベートブラウズなど) */
+export function setQueue(queue) {
+  return write(KEYS.queue, JSON.stringify(Array.isArray(queue) ? queue : []));
 }

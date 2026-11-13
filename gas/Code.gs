@@ -17,6 +17,12 @@
  *  - 合言葉そのものは、どこにも保存しない・ログにも出さない。
  *    保存するのは「ソルト付き SHA-256 のハッシュ値」だけ。
  *  - 合言葉が合わない通信には、データを一切返さない。
+ *
+ * コードを直したとき(2回目以降)
+ *  - このファイルの中身をすべて貼り直して保存し、
+ *    「デプロイ」→「デプロイを管理」→ 鉛筆(編集)→ バージョン「新バージョン」→「デプロイ」。
+ *    (URL は変わらない。「新しいデプロイ」を選ぶと URL が変わってしまうので注意)
+ *  - メニュー①(初期設定)をやり直す必要はない。シートは作り直さない。
  */
 
 // ============================================================================
@@ -55,7 +61,7 @@ const SETTING_KEY = {
 };
 
 /** 変動費のカテゴリ(初期値。あとは `設定` シートの E列で増減する) */
-const DEFAULT_CATEGORIES = ['食費', '生活必需品', '交通費', '交際費', '娯楽費', '衣類', '美容系', '病院', 'ごまちゃん'];
+const DEFAULT_CATEGORIES = ['食費', '生活必需品', '交際費', '交通費', '病院', '衣類', '雑貨', '美容系', '娯楽費', 'ごまちゃん'];
 
 /**
  * `毎月の項目` の初期データ(仕様書 4.3 の表)。金額は空で登録する。
@@ -91,14 +97,44 @@ const MIN_AIKOTOBA_LENGTH = 4;
 /** 同時書き込みの順番待ちの上限(ミリ秒) */
 const LOCK_WAIT_MS = 20000;
 
+/** 日時を文字にするときのタイムゾーン(日本時間で固定) */
+const TZ = 'Asia/Tokyo';
+
+/** 共同口座の財布の名前 */
+const WALLET_JOINT = '共同口座';
+
+/** アプリの入力画面から記録できる種類 */
+const KIND = { VARIABLE: '変動費', SPECIAL: '特別費', DEPOSIT: '共同へ入金' };
+const APP_KINDS = [KIND.VARIABLE, KIND.SPECIAL, KIND.DEPOSIT];
+
+/** `記録` の「元」列に入れる値(アプリからの記録) */
+const SOURCE_APP = 'アプリ';
+
+/** `記録` の「削除」列に付ける印(行は消さない) */
+const DELETED_MARK = '削除';
+
+/** 金額の上限(円)と、項目・メモの長さの上限(文字数) */
+const MAX_AMOUNT = 99999999;
+const MAX_TEXT_LENGTH = 100;
+
+/**
+ * 総当たり対策: 合言葉の照合に失敗した回数を数える。
+ * WINDOW_SEC 秒のあいだに MAX 回失敗したら、その間は照合せずに locked を返す。
+ * (GAS では相手の IP が分からないので、全体で1つのカウンタ)
+ */
+const AUTH_FAIL = { CACHE_KEY: 'auth_fail_v1', WINDOW_SEC: 600, MAX: 30 };
+
 /**
  * API の一覧(ハンドラの表)。
- * 段階1以降は、ここに1行足して、下に handleXxx_ を書けば action が増える。
+ * ここに1行足して、下に handleXxx_ を書けば action が増える。
  *   fn   … 処理の本体。引数は ctx = { user, settings, req }。返した値がそのまま応答になる
  *   lock … true なら、ほかの書き込みが終わるのを待ってから実行する(書き込む action 用)
  */
 const HANDLERS = {
   login: { fn: handleLogin_, lock: false },
+  sync: { fn: handleSync_, lock: false },
+  addRecord: { fn: handleAddRecord_, lock: true },
+  deleteRecord: { fn: handleDeleteRecord_, lock: true },
 };
 
 // ============================================================================
@@ -430,7 +466,8 @@ function doGet() {
  *   { "action": "login", "合言葉": "…", … }   ※ "合言葉" の代わりに "token" でも可
  * 応答は JSON。
  *   成功: { "ok": true, … }
- *   失敗: { "ok": false, "error": "auth" | "setup" | "bad_request" | "unknown_action" | "busy" | "server" }
+ *   失敗: { "ok": false, "error": "auth" | "locked" | "setup" | "bad_request" | "unknown_action"
+ *                                  | "invalid" | "forbidden" | "busy" | "server" }
  */
 function doPost(e) {
   let result;
@@ -459,10 +496,18 @@ function handleRequest_(e) {
     return { ok: false, error: 'bad_request' };
   }
 
+  // 合言葉の間違いが続いているあいだは、照合そのものをしない(総当たり対策)
+  if (isAuthLocked_()) {
+    return { ok: false, error: 'locked' };
+  }
+
   // まず合言葉。合わなければ、ここで終わり(action の有無なども教えない)
   const given = req['合言葉'] !== undefined && req['合言葉'] !== null ? req['合言葉'] : req.token;
   const auth = authenticate_(given);
   if (!auth.user) {
+    if (auth.error === 'auth') {
+      recordAuthFailure_();
+    }
     return { ok: false, error: auth.error };
   }
 
@@ -519,6 +564,49 @@ function authenticate_(given) {
   return { user: null, error: 'auth' };
 }
 
+/**
+ * いまの失敗回数を読む。数えはじめから WINDOW_SEC 秒を過ぎていれば null。
+ * キャッシュが使えないときは null(= 制限なし)にして、ふつうの利用を止めない。
+ * @return {{count: number, start: number}|null}
+ */
+function readAuthFailures_() {
+  try {
+    const raw = CacheService.getScriptCache().get(AUTH_FAIL.CACHE_KEY);
+    if (!raw) {
+      return null;
+    }
+    const state = JSON.parse(raw);
+    if (!state || typeof state.count !== 'number' || typeof state.start !== 'number') {
+      return null;
+    }
+    if (Date.now() - state.start >= AUTH_FAIL.WINDOW_SEC * 1000) {
+      return null;
+    }
+    return state;
+  } catch (err) {
+    return null;
+  }
+}
+
+/** 合言葉の間違いが続いて、いまは受け付けを止めているか */
+function isAuthLocked_() {
+  const state = readAuthFailures_();
+  return Boolean(state) && state.count >= AUTH_FAIL.MAX;
+}
+
+/** 合言葉の間違いを1回数える(最初の間違いから WINDOW_SEC 秒で自動的に消える) */
+function recordAuthFailure_() {
+  try {
+    const now = Date.now();
+    const state = readAuthFailures_() || { count: 0, start: now };
+    state.count += 1;
+    const remainSec = Math.max(1, Math.ceil((state.start + AUTH_FAIL.WINDOW_SEC * 1000 - now) / 1000));
+    CacheService.getScriptCache().put(AUTH_FAIL.CACHE_KEY, JSON.stringify(state), remainSec);
+  } catch (err) {
+    console.error('失敗回数を記録できませんでした: ' + (err && err.message ? err.message : err));
+  }
+}
+
 /** JSON の応答を作る */
 function json_(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
@@ -531,6 +619,350 @@ function json_(obj) {
 /** login: 合言葉が通ったことと、誰の iPhone か、カテゴリ一覧を返す */
 function handleLogin_(ctx) {
   return { ok: true, user: ctx.user, categories: ctx.settings.categories };
+}
+
+/**
+ * sync: 起動時にまとめて取る。誰の iPhone か、カテゴリ一覧、削除されていない記録の全件。
+ * 相手の財布の分も返す(絞り込みは画面側。仕様書 3章)。
+ */
+function handleSync_(ctx) {
+  const table = openRecords_();
+  if (!table) {
+    return { ok: false, error: 'setup' };
+  }
+  return {
+    ok: true,
+    user: ctx.user,
+    categories: ctx.settings.categories,
+    records: listRecords_(table),
+  };
+}
+
+/**
+ * addRecord: 記録を1件足す。
+ *   リクエスト: { id, 日付, 財布, 種類, 項目, メモ, 金額 }
+ *   同じ id がすでにあれば、書かずに成功を返す(送り直しで二重にならない)。
+ */
+function handleAddRecord_(ctx) {
+  const checked = validateRecord_(ctx.req, ctx.user);
+  if (checked.field) {
+    return { ok: false, error: 'invalid', field: checked.field };
+  }
+  const record = checked.record;
+
+  const table = openRecords_();
+  if (!table) {
+    return { ok: false, error: 'setup' };
+  }
+  if (findRecordRow_(table, record.id) > 0) {
+    return { ok: true, id: record.id, duplicate: true };
+  }
+
+  const now = new Date();
+  appendRecord_(table, {
+    'id': record.id,
+    '作成日時': Utilities.formatDate(now, TZ, 'yyyy-MM-dd HH:mm:ss'),
+    '日付': record.date,
+    '月': record.date.slice(0, 7),
+    '財布': record.wallet,
+    '種類': record.kind,
+    '項目': record.item,
+    'メモ': record.memo,
+    '金額': record.amount,
+    '記録した人': ctx.user,
+    '元': SOURCE_APP,
+    '削除': '',
+  });
+  return { ok: true, id: record.id, duplicate: false };
+}
+
+/**
+ * deleteRecord: 記録を取り消す(「削除」列に印を付ける。行は消さない)。
+ *   リクエスト: { id }
+ *   自分が記録したものだけ。見つからない・すでに削除済みでも成功を返す(送り直しても安全)。
+ */
+function handleDeleteRecord_(ctx) {
+  const id = ctx.req.id;
+  if (!isValidId_(id)) {
+    return { ok: false, error: 'invalid', field: 'id' };
+  }
+  const table = openRecords_();
+  if (!table) {
+    return { ok: false, error: 'setup' };
+  }
+  const rowNo = findRecordRow_(table, id);
+  if (rowNo < 0) {
+    return { ok: true, id: id, found: false };
+  }
+  const row = table.values[rowNo - 1];
+  if (isDeleted_(row[table.col['削除']])) {
+    return { ok: true, id: id, found: true };
+  }
+  if (String(row[table.col['記録した人']]).trim() !== ctx.user) {
+    return { ok: false, error: 'forbidden' };
+  }
+  table.sheet.getRange(rowNo, table.col['削除'] + 1).setNumberFormat('@').setValue(DELETED_MARK);
+  return { ok: true, id: id, found: true };
+}
+
+// ============================================================================
+// `記録` シートの読み書き
+// ============================================================================
+
+/**
+ * `記録` シートを読む。シートが無い・列名が足りないときは null。
+ * 列は名前で探す(人が列を入れ替えたり、右に列を足したりしても壊れないように)。
+ * @return {{sheet: Sheet, values: Array[], col: Object, timeZone: string}|null}
+ *   col は「列名 → 0始まりの位置」
+ */
+function openRecords_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET.RECORDS);
+  if (!sheet) {
+    return null;
+  }
+  const values = sheet.getDataRange().getValues();
+  const header = (values[0] || []).map(function (name) {
+    return String(name).trim();
+  });
+  const col = {};
+  for (let i = 0; i < HEADERS.RECORDS.length; i++) {
+    const name = HEADERS.RECORDS[i];
+    const index = header.indexOf(name);
+    if (index === -1) {
+      return null;
+    }
+    col[name] = index;
+  }
+  return { sheet: sheet, values: values, col: col, timeZone: ss.getSpreadsheetTimeZone() || TZ };
+}
+
+/** id の行番号(1始まり)を返す。無ければ -1 */
+function findRecordRow_(table, id) {
+  const c = table.col['id'];
+  for (let r = 1; r < table.values.length; r++) {
+    if (String(table.values[r][c]).trim() === id) {
+      return r + 1;
+    }
+  }
+  return -1;
+}
+
+/**
+ * いちばん下に1行足す。
+ * 金額以外は「書式なしテキスト」にしてから書く
+ * (2026-11-13 や 2026-11 が、勝手に日付の型へ変わるのを防ぐ。タイムゾーンずれ対策)。
+ * シートを作り直さなくてよいように、書式は書き込む行にだけ設定する。
+ */
+function appendRecord_(table, record) {
+  const sheet = table.sheet;
+  const indexes = HEADERS.RECORDS.map(function (name) {
+    return table.col[name];
+  });
+  const first = Math.min.apply(null, indexes);
+  const last = Math.max.apply(null, indexes);
+  const width = last - first + 1;
+
+  const values = [];
+  const formats = [];
+  for (let i = 0; i < width; i++) {
+    values.push('');
+    formats.push('@');
+  }
+  HEADERS.RECORDS.forEach(function (name) {
+    values[table.col[name] - first] = record[name];
+  });
+  formats[table.col['金額'] - first] = '#,##0';
+
+  const rowNo = Math.max(sheet.getLastRow(), 1) + 1;
+  if (rowNo > sheet.getMaxRows()) {
+    sheet.insertRowsAfter(sheet.getMaxRows(), 200);
+  }
+  sheet.getRange(rowNo, first + 1, 1, width).setNumberFormats([formats]).setValues([values]);
+}
+
+/** 削除されていない記録を、すべて返す(型のゆれは、ここでそろえる) */
+function listRecords_(table) {
+  const col = table.col;
+  const tz = table.timeZone;
+  const list = [];
+  for (let r = 1; r < table.values.length; r++) {
+    const row = table.values[r];
+    const id = String(row[col['id']]).trim();
+    if (!id || isDeleted_(row[col['削除']])) {
+      continue;
+    }
+    const date = toDateString_(row[col['日付']], tz);
+    list.push({
+      'id': id,
+      '作成日時': toDateTimeString_(row[col['作成日時']], tz),
+      '日付': date,
+      '月': toMonthString_(row[col['月']], date, tz),
+      '財布': String(row[col['財布']]).trim(),
+      '種類': String(row[col['種類']]).trim(),
+      '項目': String(row[col['項目']]).trim(),
+      'メモ': String(row[col['メモ']]).trim(),
+      '金額': toAmount_(row[col['金額']]),
+      '記録した人': String(row[col['記録した人']]).trim(),
+      '元': String(row[col['元']]).trim(),
+    });
+  }
+  return list;
+}
+
+/** Date 型かどうか(セルに日付の型で入っている場合) */
+function isDate_(value) {
+  return Object.prototype.toString.call(value) === '[object Date]' && !isNaN(value.getTime());
+}
+
+function pad2_(n) {
+  return ('0' + n).slice(-2);
+}
+
+/** 'YYYY-MM-DD' にそろえる(Date 型や 2026/1/5 のような書き方が混じっていても壊れない) */
+function toDateString_(value, tz) {
+  if (isDate_(value)) {
+    return Utilities.formatDate(value, tz, 'yyyy-MM-dd');
+  }
+  const text = String(value === null || value === undefined ? '' : value).trim();
+  const m = text.match(/^(\d{4})[-\/.年](\d{1,2})[-\/.月](\d{1,2})/);
+  return m ? m[1] + '-' + pad2_(m[2]) + '-' + pad2_(m[3]) : text;
+}
+
+/** 'YYYY-MM' にそろえる。読めなければ、日付から作る */
+function toMonthString_(value, dateString, tz) {
+  if (isDate_(value)) {
+    return Utilities.formatDate(value, tz, 'yyyy-MM');
+  }
+  const text = String(value === null || value === undefined ? '' : value).trim();
+  const m = text.match(/^(\d{4})[-\/.年](\d{1,2})/);
+  if (m) {
+    return m[1] + '-' + pad2_(m[2]);
+  }
+  return /^\d{4}-\d{2}-\d{2}$/.test(dateString) ? dateString.slice(0, 7) : '';
+}
+
+/** 'YYYY-MM-DD HH:mm:ss' にそろえる */
+function toDateTimeString_(value, tz) {
+  if (isDate_(value)) {
+    return Utilities.formatDate(value, tz, 'yyyy-MM-dd HH:mm:ss');
+  }
+  return String(value === null || value === undefined ? '' : value).trim();
+}
+
+/** 金額を数値にする("1,200" のような文字でも読む。読めなければ 0) */
+function toAmount_(value) {
+  if (typeof value === 'number') {
+    return isFinite(value) ? Math.round(value) : 0;
+  }
+  const n = Number(String(value).replace(/[,\s¥円]/g, ''));
+  return isFinite(n) ? Math.round(n) : 0;
+}
+
+/** 「削除」列に印があるか(空・FALSE 以外は削除済みと見なす) */
+function isDeleted_(value) {
+  if (value === true) {
+    return true;
+  }
+  if (value === false || value === null || value === undefined) {
+    return false;
+  }
+  const text = String(value).trim();
+  return text !== '' && text.toUpperCase() !== 'FALSE' && text !== '0';
+}
+
+// ============================================================================
+// 入力の検証
+// ============================================================================
+
+/** id は、端末が作る UUID など(半角英数字と - _ で 8〜64 文字) */
+function isValidId_(id) {
+  return typeof id === 'string' && /^[A-Za-z0-9_-]{8,64}$/.test(id);
+}
+
+/** 実在する日付の 'YYYY-MM-DD' か(2000〜2100年) */
+function isValidDateString_(text) {
+  if (typeof text !== 'string') {
+    return false;
+  }
+  const m = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) {
+    return false;
+  }
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  if (y < 2000 || y > 2100) {
+    return false;
+  }
+  const date = new Date(Date.UTC(y, mo - 1, d));
+  return date.getUTCFullYear() === y && date.getUTCMonth() === mo - 1 && date.getUTCDate() === d;
+}
+
+/**
+ * 項目・メモの文字をととのえる。文字でない・長すぎるときは null。
+ * 先頭の「=」は全角にする(シートで数式として動いてしまうのを防ぐ)。
+ */
+function cleanText_(value) {
+  if (value === null || value === undefined) {
+    return '';
+  }
+  if (typeof value !== 'string') {
+    return null;
+  }
+  let text = value.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
+  if (countChars_(text) > MAX_TEXT_LENGTH) {
+    return null;
+  }
+  if (text.charAt(0) === '=') {
+    text = '＝' + text.slice(1);
+  }
+  return text;
+}
+
+/**
+ * addRecord の中身をたしかめる。
+ * @return {{record: Object}|{field: string}} だめなときは、だめだった項目名を field に入れる
+ */
+function validateRecord_(req, user) {
+  if (!isValidId_(req.id)) {
+    return { field: 'id' };
+  }
+  if (!isValidDateString_(req['日付'])) {
+    return { field: '日付' };
+  }
+  const kind = req['種類'];
+  if (APP_KINDS.indexOf(kind) === -1) {
+    return { field: '種類' };
+  }
+  const amount = req['金額'];
+  if (typeof amount !== 'number' || !isFinite(amount) || Math.floor(amount) !== amount || amount <= 0 || amount > MAX_AMOUNT) {
+    return { field: '金額' };
+  }
+
+  // 財布: 自分か共同口座だけ。「共同へ入金」は、いつも自分の財布から
+  let wallet = req['財布'];
+  if (kind === KIND.DEPOSIT) {
+    wallet = user;
+  } else if (wallet !== user && wallet !== WALLET_JOINT) {
+    return { field: '財布' };
+  }
+
+  let item = '';
+  let memo = '';
+  if (kind === KIND.VARIABLE) {
+    item = cleanText_(req['項目']);
+    if (!item) {
+      return { field: '項目' };
+    }
+  } else if (kind === KIND.SPECIAL) {
+    memo = cleanText_(req['メモ']);
+    if (!memo) {
+      return { field: 'メモ' };
+    }
+  }
+
+  return { record: { id: req.id, date: req['日付'], wallet: wallet, kind: kind, item: item, memo: memo, amount: amount } };
 }
 
 // ============================================================================

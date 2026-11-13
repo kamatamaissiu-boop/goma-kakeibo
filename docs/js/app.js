@@ -1,30 +1,88 @@
-// ごまちゃん家計簿 画面の入口(段階0: 準備中の画面と、保存先との接続テスト)
+// ごまちゃん家計簿 画面の入口。
+//   - どの画面を出すかを決める(入力 / 合言葉 / 準備中)
+//   - 合言葉の登録
+//   - 裏での同期(最新データの取得)と、未送信キューを送り直す合図
+//   - Service Worker の登録
 
-import { ApiError, isConfigured, login } from "./api.js";
+import { ApiError, isConfigured, login, sync } from "./api.js";
+import { APP_VERSION } from "./config.js";
+import { initInput, onHide, onResume, refreshData, showInput } from "./input.js";
+import * as queue from "./queue.js";
 import * as store from "./store.js";
 
 // --- 画面の部品 -------------------------------------------------------------
 
 const el = {
-  screenTitle: document.getElementById("screen-title"),
-  gomaLine: document.getElementById("goma-line"),
+  views: {
+    input: document.getElementById("view-input"),
+    login: document.getElementById("view-login"),
+    soon: document.getElementById("view-soon"),
+  },
   status: document.getElementById("connect-status"),
   form: document.getElementById("login-form"),
   input: document.getElementById("aikotoba"),
   button: document.getElementById("login-button"),
   buttonText: document.getElementById("login-button-text"),
+  soonTitle: document.getElementById("soon-title"),
+  soonStatus: document.getElementById("soon-status"),
   forget: document.getElementById("forget-button"),
   tabs: Array.from(document.querySelectorAll(".tab")),
 };
 
 const TAB_TITLES = { input: "入力", view: "見る", monthly: "毎月の設定" };
-const LINE_DEFAULT = "もうすぐ使えるようになるにゃ。";
 const BUTTON_IDLE = "この iPhone を登録する";
 const BUTTON_BUSY = "たしかめています…";
+const LOGIN_PROMPT = "合言葉を入れてね。さいしょの1回だけでだいじょうぶ。";
+/** 画面に戻ってきたとき、前回の同期からこの時間がたっていたら取り直す */
+const SYNC_INTERVAL_MS = 5 * 60 * 1000;
+
+let currentTab = "input";
+let lastSyncAt = 0;
+let syncing = false;
+
+function isLoggedIn() {
+  return Boolean(store.getAikotoba() && store.getUser());
+}
 
 // --- 表示の切り替え ---------------------------------------------------------
 
-/** つながりの状態を1行で出す。tone: "" | "ok" | "warn" */
+/** いまのタブと登録の状態から、出す画面を1つ決める */
+function render() {
+  let name;
+  if (currentTab !== "input") {
+    name = "soon";
+    el.soonTitle.textContent = TAB_TITLES[currentTab] || "";
+    const user = store.getUser();
+    const pending = queue.pendingCount();
+    const lines = [isLoggedIn() ? `${user}のiPhoneとして登録済みです。` : "この iPhone は、まだ登録していません。"];
+    if (pending > 0) lines.push(`まだ送れていない記録が ${pending}件あります(自動で送り直します)。`);
+    lines.push(`版 ${APP_VERSION}`);
+    el.soonStatus.textContent = lines.join("\n");
+    el.forget.hidden = !isLoggedIn();
+  } else if (isLoggedIn()) {
+    name = "input";
+    showInput();
+  } else {
+    name = "login";
+  }
+  for (const [key, view] of Object.entries(el.views)) {
+    view.hidden = key !== name;
+  }
+}
+
+function selectTab(name) {
+  currentTab = name;
+  for (const tab of el.tabs) {
+    if (tab.dataset.tab === name) {
+      tab.setAttribute("aria-current", "page");
+    } else {
+      tab.removeAttribute("aria-current");
+    }
+  }
+  render();
+}
+
+/** 合言葉の画面の、状態の1行。tone: "" | "warn" */
 function setStatus(text, tone = "") {
   el.status.textContent = text;
   if (tone) {
@@ -32,21 +90,7 @@ function setStatus(text, tone = "") {
   } else {
     delete el.status.dataset.tone;
   }
-}
-
-/** 合言葉の入力欄を出す */
-function showLoginForm(message, tone = "") {
-  setStatus(message, tone);
-  el.form.hidden = false;
-  el.forget.hidden = true;
   el.input.setAttribute("aria-invalid", tone === "warn" ? "true" : "false");
-}
-
-/** 登録済みの表示にする */
-function showRegistered(message) {
-  setStatus(message, "ok");
-  el.form.hidden = true;
-  el.forget.hidden = false;
 }
 
 function setBusy(busy) {
@@ -61,6 +105,8 @@ function messageFor(err) {
   switch (code) {
     case "auth":
       return "合言葉がちがうみたいにゃ。もういちど、ゆっくり入れてみてね。";
+    case "locked":
+      return "少し時間をおいてにゃ。まちがいが続いたので、10分ほどお休みしています。";
     case "network":
       return "いまは保存先に届きませんでした。電波のよいところで、もういちど試してみてね。";
     case "setup":
@@ -76,12 +122,12 @@ function messageFor(err) {
 
 // --- 合言葉 -----------------------------------------------------------------
 
-/** 入力された合言葉をたしかめて、通ればこの iPhone に覚えさせる */
+/** 入力された合言葉をたしかめて、通ればこの iPhone に覚えさせ、入力画面へ進む */
 async function submitAikotoba(event) {
   event.preventDefault();
   const aikotoba = el.input.value.trim();
   if (!aikotoba) {
-    showLoginForm("合言葉を入れてね。", "warn");
+    setStatus("合言葉を入れてね。", "warn");
     el.input.focus();
     return;
   }
@@ -90,12 +136,19 @@ async function submitAikotoba(event) {
   setStatus("たしかめています…");
   try {
     const result = await login(aikotoba);
-    store.saveLogin({ aikotoba, user: result.user, categories: result.categories });
+    if (!store.saveLogin({ aikotoba, user: result.user, categories: result.categories })) {
+      setStatus("この iPhone に覚えさせられませんでした。プライベートブラウズになっていないか見てみてね。", "warn");
+      return;
+    }
     el.input.value = "";
     el.input.blur();
-    showRegistered(`${result.user}のiPhoneとして登録したにゃ`);
+    setStatus(LOGIN_PROMPT);
+    selectTab("input");
+    // 裏で: 前に送れなかった記録を送り、最新のデータを取る
+    queue.flush();
+    syncNow();
   } catch (err) {
-    showLoginForm(messageFor(err), "warn");
+    setStatus(messageFor(err), "warn");
     if (err instanceof ApiError && err.code === "auth") {
       el.input.select();
     }
@@ -104,64 +157,78 @@ async function submitAikotoba(event) {
   }
 }
 
-/** 覚えている合言葉が、いまも通るかを裏でたしかめる(画面は先に出しておく) */
-async function recheckSavedLogin() {
-  const aikotoba = store.getAikotoba();
-  try {
-    const result = await login(aikotoba);
-    store.saveLogin({ aikotoba, user: result.user, categories: result.categories });
-    showRegistered(`${result.user}のiPhoneとして登録済みです。保存先ともつながっています。`);
-  } catch (err) {
-    if (err instanceof ApiError && err.code === "auth") {
-      // 合言葉が変えられた場合など。覚えていた分を消して、入れ直してもらう
-      store.clearLogin();
-      showLoginForm("合言葉が変わったみたいにゃ。新しい合言葉を入れてね。", "warn");
-    } else {
-      // 電波がないだけ、などの場合は登録を消さない
-      setStatus(`${store.getUser()}のiPhoneとして登録済みです。(${messageFor(err)})`, "warn");
-    }
-  }
+/** 覚えていた合言葉が通らなくなったとき(合言葉が変えられた場合など): 入れ直してもらう */
+function handleAuthLost() {
+  if (!isLoggedIn()) return;
+  store.clearLogin();
+  setStatus("合言葉が変わったみたいにゃ。新しい合言葉を入れてね。", "warn");
+  render();
 }
 
 function forgetLogin() {
-  if (!window.confirm("この iPhone の登録をやり直しますか?(合言葉をもういちど入れます)")) {
+  const pending = queue.pendingCount();
+  const note = pending > 0 ? `\nまだ送れていない記録が ${pending}件あります。同じ人の合言葉を入れ直すと、あとで送られます。` : "";
+  if (!window.confirm(`この iPhone の登録をやり直しますか?(合言葉をもういちど入れます)${note}`)) {
     return;
   }
   store.clearLogin();
-  showLoginForm("合言葉を入れてね。さいしょの1回だけでだいじょうぶ。");
+  setStatus(LOGIN_PROMPT);
+  selectTab("input");
   el.input.focus();
 }
 
-/** 起動時: 保存先とのつながりを判定して、出すものを決める */
-function initConnection() {
-  if (!isConfigured()) {
-    setStatus("まだ保存先とつながっていません", "warn");
-    el.form.hidden = true;
-    el.forget.hidden = true;
-    return;
-  }
+// --- 裏での同期 -------------------------------------------------------------
 
-  if (store.getAikotoba() && store.getUser()) {
-    // 2回目以降は、合言葉を聞かずに通す
-    showRegistered(`${store.getUser()}のiPhoneとして登録済みです。`);
-    recheckSavedLogin();
-  } else {
-    showLoginForm("合言葉を入れてね。さいしょの1回だけでだいじょうぶ。");
+/**
+ * 最新のデータ(カテゴリ・記録の一覧)を取って、端末に保存する。
+ * 画面は前回のデータで先に出してあるので、失敗しても何も止めない。
+ */
+async function syncNow() {
+  if (syncing || !isConfigured() || !isLoggedIn()) return;
+  syncing = true;
+  const aikotoba = store.getAikotoba();
+  try {
+    let result;
+    try {
+      result = await sync();
+    } catch (err) {
+      if (!(err instanceof ApiError) || err.code !== "unknown_action") throw err;
+      // 保存先(GAS)がまだ古い版のとき: カテゴリだけでも取り直す
+      result = await login(aikotoba);
+    }
+    // 取りに行っているあいだに登録がやり直されていたら、結果は捨てる
+    if (store.getAikotoba() !== aikotoba) return;
+
+    const userChanged = result.user !== store.getUser();
+    store.saveLogin({ aikotoba, user: result.user, categories: result.categories });
+    if (Array.isArray(result.records)) {
+      // 取り消しを送っている途中の記録は、一覧に戻さない
+      const deleting = queue.pendingDeleteIds();
+      store.setRecords(result.records.filter((r) => !deleting.includes(r.id)));
+    }
+    lastSyncAt = Date.now();
+    if (userChanged) {
+      render();
+    } else {
+      refreshData();
+    }
+  } catch (err) {
+    if (err instanceof ApiError && err.code === "auth") {
+      handleAuthLost();
+    }
+    // 電波がない・ロック中などは、前回のデータのまま使いつづける
+  } finally {
+    syncing = false;
   }
 }
 
-// --- 下のタブ(段階0では見た目だけ) ----------------------------------------
-
-function selectTab(name) {
-  for (const tab of el.tabs) {
-    if (tab.dataset.tab === name) {
-      tab.setAttribute("aria-current", "page");
-    } else {
-      tab.removeAttribute("aria-current");
-    }
+/** アプリに戻ってきた・電波が戻った: 未送信を送り直し、古くなっていれば取り直す */
+function wake() {
+  if (!isConfigured() || !isLoggedIn()) return;
+  queue.flush();
+  if (Date.now() - lastSyncAt > SYNC_INTERVAL_MS) {
+    syncNow();
   }
-  el.screenTitle.textContent = TAB_TITLES[name] || "";
-  el.gomaLine.textContent = LINE_DEFAULT;
 }
 
 // --- Service Worker(アプリの殻を端末に保存して、すぐ開けるようにする) -------
@@ -189,11 +256,44 @@ function registerServiceWorker() {
 
 // --- 起動 -------------------------------------------------------------------
 
+initInput();
 el.form.addEventListener("submit", submitAikotoba);
 el.forget.addEventListener("click", forgetLogin);
 for (const tab of el.tabs) {
   tab.addEventListener("click", () => selectTab(tab.dataset.tab));
 }
 
-initConnection();
+queue.subscribe((event) => {
+  if (event.type === "error" && event.code === "auth") {
+    handleAuthLost();
+  }
+});
+
+window.addEventListener("online", wake);
+window.addEventListener("pageshow", (event) => {
+  if (event.persisted) wake();
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    onResume();
+    wake();
+  } else {
+    onHide();
+  }
+});
+
+if (!isConfigured()) {
+  setStatus("まだ保存先とつながっていません", "warn");
+  el.form.hidden = true;
+} else {
+  setStatus(LOGIN_PROMPT);
+}
+
+// 登録済みなら、端末に保存してある前回のデータで、すぐ入力画面を出す。最新は裏で取りに行く
+render();
+if (isConfigured() && isLoggedIn()) {
+  queue.flush();
+  syncNow();
+}
+
 registerServiceWorker();

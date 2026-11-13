@@ -56,43 +56,151 @@
 
 <div class="app">
 
-  <!-- 画面の中身。段階1以降は、タブごとの画面をここに差し込む -->
+  <!-- 画面の中身。JS が、いま出す画面(view)1つだけを見えるようにする -->
   <main class="screen" id="screen">
 
-    <!-- 準備中の空画面 -->
-    <section class="hero" aria-labelledby="screen-title">
-      <h1 class="hero__title" id="screen-title">入力</h1>
-      <img class="hero__goma" src="img/goma-round.svg" alt="ごまちゃん" width="168" height="160">
-      <p class="bubble">
+    <!-- ===== 入力(起動するとここが開く) ===== -->
+    <section class="view view--input" id="view-input" aria-label="入力" hidden>
+
+      <!-- 写真の枠。段階4でアルバムの写真に差し替える:
+           #photo-img の src に写真を入れて hidden を外し、#photo の data-state を "photo" にする。
+           カメラボタン(アルバムへ)も段階4で、この枠の右上に足す -->
+      <div class="photo" id="photo" data-state="placeholder">
+        <img class="photo__img" id="photo-img" alt="" hidden>
+        <img class="photo__goma" src="img/goma-round.svg" alt="ごまちゃん" width="126" height="120">
+        <!-- 未送信があるときだけ出す。押すと送り直す -->
+        <button class="pending" id="pending" type="button" hidden>
+          <span id="pending-text">未送信 0件</span>
+        </button>
+      </div>
+
+      <!-- ごまちゃんの一言。記録の直後は、下に「なにを記録したか」と「とりけす」が出る -->
+      <div class="bubble bubble--over">
         <svg class="bubble__paw" aria-hidden="true" width="18" height="18" fill="currentColor"><use href="#i-paw"></use></svg>
-        <span id="goma-line">もうすぐ使えるようになるにゃ。</span>
-      </p>
-      <p class="hero__note">この画面は準備中です</p>
+        <div class="bubble__body">
+          <p id="input-line" role="status" aria-live="polite"></p>
+          <div class="last" id="last" hidden>
+            <span class="last__text" id="last-text"></span>
+            <button class="last__undo" id="undo" type="button">とりけす</button>
+          </div>
+        </div>
+      </div>
+
+      <form class="entry" id="entry" novalidate autocomplete="off">
+
+        <div class="field">
+          <div class="label" id="wallet-label">だれの財布</div>
+          <div class="choices choices--2" id="wallets" role="group" aria-labelledby="wallet-label">
+            <button class="choice" type="button" data-wallet="self" aria-pressed="true">自分</button>
+            <button class="choice" type="button" data-wallet="joint" aria-pressed="false">共同口座</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="label" id="kind-label">種類</div>
+          <div class="choices choices--3 choices--kind" id="kinds" role="group" aria-labelledby="kind-label">
+            <button class="choice" type="button" data-kind="変動費" aria-pressed="true">変動費</button>
+            <button class="choice" type="button" data-kind="特別費" aria-pressed="false">特別費</button>
+            <button class="choice" type="button" data-kind="共同へ入金" aria-pressed="false">共同へ入金</button>
+          </div>
+        </div>
+
+        <!-- 変動費: カテゴリ(ボタンは JS が、保存先のカテゴリ一覧から作る) -->
+        <div class="field" id="field-category">
+          <div class="label" id="category-label">カテゴリ</div>
+          <div class="choices choices--3" id="categories" role="group" aria-labelledby="category-label"></div>
+        </div>
+
+        <!-- 特別費: 内容の自由記入 -->
+        <div class="field" id="field-memo" hidden>
+          <label class="label" for="memo">特別費の内容（自由に書けます）</label>
+          <input class="input" id="memo" name="memo" type="text" maxlength="60" enterkeyhint="next"
+                 autocomplete="off" placeholder="例: 友人の結婚祝い">
+          <p class="hint">カテゴリに入らない出費はここへ</p>
+        </div>
+        <div class="field" id="field-suggestions" hidden>
+          <div class="label" id="suggestions-label">まえに書いた内容から選ぶ</div>
+          <div class="chips" id="suggestions" role="group" aria-labelledby="suggestions-label"></div>
+        </div>
+
+        <!-- 共同へ入金: 追加の入力なし -->
+        <p class="note" id="deposit-note" hidden></p>
+
+        <div class="field">
+          <label class="label" for="amount">金額</label>
+          <div class="amount" id="amount-box">
+            <span class="amount__yen" aria-hidden="true">¥</span>
+            <input class="amount__input" id="amount" name="amount" type="text" inputmode="numeric" pattern="[0-9,]*"
+                   autocomplete="off" enterkeyhint="done" placeholder="0" maxlength="10">
+          </div>
+        </div>
+
+        <div class="date">
+          <div class="date__now"><span class="label label--inline">日付</span>　<span id="date-text"></span></div>
+          <button class="btn-text" id="date-today" type="button" hidden>きょうに戻す</button>
+          <!-- 「変更」の上に、透明な日付入力を重ねてある(押すと iPhone の日付えらびが開く) -->
+          <label class="btn-text date__change">
+            <span>変更</span>
+            <input class="date__picker" id="date-picker" type="date" aria-label="日付を変更">
+          </label>
+        </div>
+
+        <!-- いつも画面の下に見えているようにする(中身がスクロールしても、ここだけ残る) -->
+        <div class="entry__footer">
+          <button class="btn btn--primary" id="submit" type="submit">
+            <svg class="btn__paw" aria-hidden="true" width="20" height="20" fill="currentColor"><use href="#i-paw"></use></svg>
+            <span id="submit-text">きろくする</span>
+          </button>
+        </div>
+      </form>
     </section>
 
-    <!-- 保存先(Google スプレッドシート)との接続テスト -->
-    <section class="card card--cream connect" id="connect" aria-labelledby="connect-title">
-      <h2 class="label" id="connect-title">保存先とのつながり</h2>
-      <p class="connect__status" id="connect-status" role="status" aria-live="polite">たしかめています…</p>
+    <!-- ===== 合言葉の入力(初回だけ) ===== -->
+    <section class="view view--plain" id="view-login" aria-label="合言葉" hidden>
+      <div class="hero">
+        <img class="hero__goma" src="img/goma-round.svg" alt="ごまちゃん" width="168" height="160">
+        <p class="bubble">
+          <svg class="bubble__paw" aria-hidden="true" width="18" height="18" fill="currentColor"><use href="#i-paw"></use></svg>
+          <span>はじめまして。合言葉をおしえてにゃ。</span>
+        </p>
+      </div>
 
-      <!-- 合言葉の入力(初回だけ)。保存先が設定済みで、まだ登録していない端末にだけ出す -->
-      <form class="login" id="login-form" hidden novalidate>
-        <label class="label" for="aikotoba">合言葉</label>
-        <input class="input" id="aikotoba" name="aikotoba" type="text"
-               autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
-               enterkeyhint="go" placeholder="じぶんの合言葉" required>
-        <button class="btn btn--primary" id="login-button" type="submit">
-          <svg class="btn__paw" aria-hidden="true" width="20" height="20" fill="currentColor"><use href="#i-paw"></use></svg>
-          <span id="login-button-text">この iPhone を登録する</span>
-        </button>
-      </form>
+      <div class="card card--cream connect" id="connect">
+        <p class="connect__status" id="connect-status" role="status" aria-live="polite"></p>
+        <form class="login" id="login-form" novalidate>
+          <label class="label" for="aikotoba">合言葉</label>
+          <input class="input" id="aikotoba" name="aikotoba" type="text"
+                 autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+                 enterkeyhint="go" placeholder="じぶんの合言葉" required>
+          <button class="btn btn--primary" id="login-button" type="submit">
+            <svg class="btn__paw" aria-hidden="true" width="20" height="20" fill="currentColor"><use href="#i-paw"></use></svg>
+            <span id="login-button-text">この iPhone を登録する</span>
+          </button>
+        </form>
+      </div>
+    </section>
 
-      <button class="btn-text" id="forget-button" type="button" hidden>この iPhone の登録をやり直す</button>
+    <!-- ===== 準備中の画面(「見る」「毎月の設定」) ===== -->
+    <section class="view view--plain" id="view-soon" aria-labelledby="soon-title" hidden>
+      <div class="hero">
+        <h1 class="hero__title" id="soon-title"></h1>
+        <img class="hero__goma" src="img/goma-round.svg" alt="ごまちゃん" width="168" height="160">
+        <p class="bubble">
+          <svg class="bubble__paw" aria-hidden="true" width="18" height="18" fill="currentColor"><use href="#i-paw"></use></svg>
+          <span>準備中にゃ。</span>
+        </p>
+        <p class="hero__note">この画面は、もうすこしで使えるようになります</p>
+      </div>
+
+      <div class="card card--cream connect">
+        <p class="connect__status" id="soon-status"></p>
+        <button class="btn-text" id="forget-button" type="button" hidden>この iPhone の登録をやり直す</button>
+      </div>
     </section>
 
   </main>
 
-  <!-- 下のタブ(段階0では見た目だけ。押すと選択中の表示だけ変わる) -->
+  <!-- 下のタブ(「見る」「毎月の設定」は準備中の画面を出す) -->
   <nav class="tabs" aria-label="メニュー">
     <button class="tab" type="button" data-tab="input" aria-current="page">
       <svg class="tab__ears" aria-hidden="true" width="30" height="9"><use href="#i-ears"></use></svg>
