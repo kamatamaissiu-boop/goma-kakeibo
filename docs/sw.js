@@ -9,7 +9,7 @@
 //
 // 画面のファイルを直したら APP_VERSION を上げる(古い保存分が消えて入れ替わる)。
 
-const APP_VERSION = "0.1.0";
+const APP_VERSION = "0.1.1";
 const SHELL_CACHE = `goma-kakeibo-shell-v${APP_VERSION}`;
 const SHELL_PREFIX = "goma-kakeibo-shell-";
 const FONT_CACHE = "goma-kakeibo-fonts-v1"; // フォントは版が変わっても使い回す
