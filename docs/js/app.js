@@ -29,12 +29,14 @@ const el = {
   about: document.getElementById("about-status"),
   forget: document.getElementById("forget-button"),
   tabs: Array.from(document.querySelectorAll(".tab")),
+  tabBar: document.getElementById("tabs"),
   screen: document.getElementById("screen"),
 };
 
-const BUTTON_IDLE = "この iPhone を登録する";
+const BUTTON_IDLE = "はじめる";
 const BUTTON_BUSY = "たしかめています…";
-const LOGIN_PROMPT = "合言葉を入れてね。さいしょの1回だけでだいじょうぶ。";
+/** 合言葉の画面の、ふだんの状態の1行。空 = 出さない(「きくのは、さいしょの1回だけ」は、いつも下に出ている) */
+const LOGIN_PROMPT = "";
 /** 画面に戻ってきたとき、前回の同期からこの時間がたっていたら取り直す */
 const SYNC_INTERVAL_MS = 5 * 60 * 1000;
 
@@ -66,6 +68,8 @@ function render() {
   for (const [key, view] of Object.entries(el.views)) {
     view.hidden = key !== name;
   }
+  // 合言葉の画面では、下のタブを出さない(登録するまで、ほかの画面は開けないので)
+  el.tabBar.hidden = name === "login";
   // 「見る」「毎月の設定」は、見えるようにしてから中身を作る
   if (name === "view") {
     showView();
@@ -103,8 +107,9 @@ function selectTab(name) {
   el.screen.scrollTop = 0;
 }
 
-/** 合言葉の画面の、状態の1行。tone: "" | "warn" */
+/** 合言葉の画面の、状態の1行(空なら出さない)。tone: "" | "warn" */
 function setStatus(text, tone = "") {
+  el.status.hidden = !text;
   el.status.textContent = text;
   if (tone) {
     el.status.dataset.tone = tone;
@@ -299,10 +304,21 @@ function registerServiceWorker() {
     navigator.serviceWorker.register("./sw.js").catch((err) => {
       console.warn("Service Worker を登録できませんでした", err);
     });
+    // 殻の保存が終わって動きだしたら、ごまちゃんの絵を裏でまとめて保存してもらう(2回目からは通信なしで出る)。
+    // すでに保存してある絵は、取り直さない
+    navigator.serviceWorker.ready
+      .then((registration) => {
+        if (registration.active) registration.active.postMessage({ type: "cache-art" });
+      })
+      .catch(() => {});
   });
 }
 
 // --- 起動 -------------------------------------------------------------------
+
+// いちばん先に登録する。新しい版に入れ替わる途中で、HTML と JS の版がずれて下の処理が止まっても、
+// 入れ替わりしだい読み込み直して、新しい画面にそろうように
+registerServiceWorker();
 
 initInput();
 initView({
@@ -373,5 +389,3 @@ if (isConfigured() && isLoggedIn()) {
   queue.flush();
   syncNow();
 }
-
-registerServiceWorker();

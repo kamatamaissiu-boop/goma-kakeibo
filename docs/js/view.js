@@ -28,6 +28,23 @@ import {
 } from "./summary.js";
 import { digitsOnly, formatAmount, formatDateShort, isDateString, todayString } from "./util.js";
 
+/** 絵(表示の大きさ)。共同口座のカードの「ようす」と、記録がまだない月・読み込み前 */
+const FIGURE = Object.freeze({
+  loaf: { src: "img/goma-loaf.png", width: 48, height: 40 },  // 香箱座り: 共同口座が順調
+  jito: { src: "img/goma-jito.png", width: 48, height: 45 },  // ジト目: 共同口座を使いすぎ
+  back: { src: "img/goma-back.png", width: 85, height: 100 }, // 後ろ姿: 記録がまだない月
+  face: { src: "img/goma-face.png", width: 85, height: 100 }, // 顔: 読み込み前
+});
+
+/** 絵を入れる(同じ絵なら、なにもしない)。絵は、はじめて出すときに読みこまれる */
+function setFigure(img, name) {
+  const figure = FIGURE[name];
+  if (img.getAttribute("src") === figure.src) return;
+  img.width = figure.width;
+  img.height = figure.height;
+  img.src = figure.src;
+}
+
 /** 明細を、はじめに何件まで出すか(それ以上は「もっと見る」) */
 const DETAILS_FIRST = 8;
 const MAX_AMOUNT_DIGITS = 8; // 保存先の上限(99,999,999円)と同じ
@@ -63,11 +80,13 @@ const el = {
   title: $("month-title"),
   notice: $("look-notice"),
   empty: $("look-empty"),
+  emptyGoma: $("look-empty-goma"),
   emptyText: $("look-empty-text"),
   cards: $("look-cards"),
   // 共同口座
   remain: $("joint-remain"),
   jointLine: $("joint-line"),
+  jointMood: $("joint-mood"),
   gauge: $("gauge"),
   deposit: $("joint-deposit"),
   depositBy: $("joint-deposit-by"),
@@ -89,6 +108,10 @@ const el = {
   estimateList: $("estimate-list"),
   walletDeposit: $("wallet-deposit"),
   walletDepositAmount: $("wallet-deposit-amount"),
+  balance: $("wallet-balance"),
+  balanceRows: $("wallet-balance-rows"),
+  balanceRemain: $("wallet-balance-remain"),
+  balanceHint: $("wallet-balance-hint"),
   walletMore: $("wallet-more"),
   // 明細
   details: $("details"),
@@ -199,6 +222,10 @@ function renderJoint(joint) {
   el.remain.textContent = yen(joint.remain);
   el.remain.toggleAttribute("data-minus", joint.remain < 0);
   el.jointLine.textContent = LINE[joint.state];
+  // ようすの絵: 順調(香箱座り)・使いすぎ(ジト目)のときだけ
+  el.jointMood.hidden = !joint.mood;
+  el.jointMood.parentElement.toggleAttribute("data-mood", Boolean(joint.mood));
+  if (joint.mood) setFigure(el.jointMood, joint.mood);
 
   el.gauge.style.setProperty("--p", String(joint.gauge));
   el.gauge.dataset.state = joint.state;
@@ -270,17 +297,44 @@ function renderWallet(wallet) {
     el.specials.append(row);
   }
 
-  // 固定費は合計に入れるが、グラフには混ぜず、まとめて1行。貯蓄は「貯めたお金」として、合計に入れない。収入も1行
+  // 固定費は合計に入れるが、グラフには混ぜず、まとめて1行。
+  // 貯蓄(「貯めたお金」)と共同口座へ入金は、合計に入れない。
+  //   収入を確定した月 → 下の「収入との差し引き」に入れる(同じ金額を2回出さない)
+  //   収入がまだの月   → いままでどおり、1行ずつ
+  const balance = wallet.balance;
   el.extras.textContent = "";
   if (wallet.fixed.total > 0) el.extras.append(extraRow(MONTHLY.FIXED, joinNames(wallet.fixed.items), "", wallet.fixed.total));
-  if (wallet.saving.total > 0) {
+  if (!balance && wallet.saving.total > 0) {
     el.extras.append(extraRow("貯めたお金", joinNames(wallet.saving.items), "（合計には入れていません）", wallet.saving.total));
   }
-  if (wallet.income > 0) el.extras.append(extraRow("", "収入（手取り）", "", wallet.income));
   el.extras.hidden = el.extras.children.length === 0;
 
-  el.walletDeposit.hidden = wallet.deposit === 0;
+  el.walletDeposit.hidden = Boolean(balance) || wallet.deposit === 0;
   el.walletDepositAmount.textContent = yen(wallet.deposit);
+
+  // 収入との差し引き: 収入 − 使ったお金 − 共同口座へ入金 − 貯めたお金 = のこり(0円の行は出さない)
+  el.balance.hidden = !balance;
+  el.balanceHint.hidden = Boolean(balance);
+  if (!balance) return;
+  el.balanceRows.textContent = "";
+  el.balanceRows.append(balanceRow("", "収入（手取り）", "", balance.income));
+  el.balanceRows.append(balanceRow("−", "使ったお金", "（上の合計）", balance.spend));
+  if (balance.deposit > 0) el.balanceRows.append(balanceRow("−", "共同口座へ入金", "", balance.deposit));
+  if (balance.saving > 0) {
+    el.balanceRows.append(balanceRow("−", "貯めたお金", `（${joinNames(wallet.saving.items)}）`, balance.saving));
+  }
+  el.balanceRemain.textContent = yen(balance.remain);
+  el.balanceRemain.toggleAttribute("data-minus", balance.remain < 0);
+}
+
+/** 「収入との差し引き」の1行。sign = "−"(引く行)か ""(収入) */
+function balanceRow(sign, text, note, amount) {
+  const row = node("div", "extra");
+  const left = node("span", "extra__left");
+  left.append(node("span", "balance__sign", sign), document.createTextNode(text));
+  if (note) left.append(node("span", "extra__note", note));
+  row.append(left, node("span", "extra__amount", yen(amount)));
+  return row;
 }
 
 /** 'YYYY-MM' → '11月' */
@@ -453,6 +507,8 @@ function render() {
     emptyText = LINE.noMonth;
   }
   el.empty.hidden = !emptyText;
+  // 記録がまだない月は、後ろ姿。読み込み前は、顔
+  if (emptyText) setFigure(el.emptyGoma, emptyText === LINE.noMonth ? "back" : "face");
   el.emptyText.textContent = emptyText;
   el.cards.hidden = Boolean(emptyText);
   if (emptyText) return;
@@ -706,6 +762,11 @@ export function initView(callbacks = {}) {
     button.addEventListener("click", () => selectFilter(button.dataset.filter));
   }
   el.cards.addEventListener("click", (event) => {
+    // 収入がまだの月の案内 → 「毎月の設定」を、その月で開く
+    if (event.target.closest("#wallet-balance-hint")) {
+      hooks.openMonthly(state.month);
+      return;
+    }
     const jump = event.target.closest("[data-details]");
     if (jump) {
       jumpToDetails(jump.dataset.details);

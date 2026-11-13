@@ -55,7 +55,10 @@ const el = {
   prev: $("monthly-prev"),
   next: $("monthly-next"),
   title: $("monthly-title"),
+  screen: $("screen"),
   notice: $("monthly-notice"),
+  noticeGoma: $("monthly-notice-goma"),
+  noticeText: $("monthly-notice-text"),
   wait: $("monthly-wait"),
   waitText: $("monthly-wait-text"),
   waitNote: $("monthly-wait-note"),
@@ -125,9 +128,11 @@ function isShown() {
   return !el.view.hidden;
 }
 
-function setNotice(text, tone = "") {
+/** 上の一言。hesoten = true で、へそ天のごまちゃんを添える(月を確定できたとき) */
+function setNotice(text, tone = "", hesoten = false) {
   el.notice.hidden = !text;
-  el.notice.textContent = text || "";
+  el.noticeText.textContent = text || "";
+  el.noticeGoma.hidden = !(text && hesoten);
   if (tone) {
     el.notice.dataset.tone = tone;
   } else {
@@ -483,6 +488,7 @@ async function submit() {
     }
   }
 
+  let closed = false;
   state.busy = true;
   setNotice("");
   paintStatus();
@@ -494,13 +500,18 @@ async function submit() {
     hooks.applyServerData(result);
     store.setMonthlyDraft(user, month, null);
     if (state.month === month) state.edits = new Map();
-    setNotice(LINE.closed(monthNumber(month)));
+    setNotice(LINE.closed(monthNumber(month)), "", true);
+    closed = true;
   } catch (err) {
     if (handleFailure(err)) return;
     setNotice(messageFor(err), "warn");
   } finally {
     state.busy = false;
-    if (isShown()) render();
+    if (isShown()) {
+      render();
+      // 確定できたら、上の一言(へそ天のごまちゃん)が見えるところまで戻す
+      if (closed) el.screen.scrollTo({ top: 0, behavior: "smooth" });
+    }
   }
 }
 

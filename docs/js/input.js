@@ -7,16 +7,33 @@
 import { DEFAULT_CATEGORIES, MEMO_SUGGESTION_COUNT, WALLET_JOINT } from "./config.js";
 import * as queue from "./queue.js";
 import * as store from "./store.js";
+import { applyQueue } from "./summary.js";
 import { digitsOnly, formatAmount, formatDateShort, isDateString, newId, todayString } from "./util.js";
 
 const KIND = Object.freeze({ VARIABLE: "変動費", SPECIAL: "特別費", DEPOSIT: "共同へ入金" });
 const MAX_AMOUNT_DIGITS = 8; // 保存先の上限(99,999,999円)と同じ
 /** アプリを離れてこの時間がたったら、変更していた日付を「きょう」に戻す */
 const DATE_KEEP_MS = 10 * 60 * 1000;
+/** 記録の直後の吹き出し(「きろくしたにゃ。」と「取り消す」)を出しておく時間。すぎたら、挨拶に戻す。
+    戻ると「取り消す」は押せなくなる(そのあとは「見る」の明細から、なおす・消す)ので、気づいて押せるだけの長さにしてある */
+const DONE_SHOW_MS = 10 * 1000;
+/** 自分の記録がこの日数以上ないと、ごまちゃんが寝ている */
+const SLEEP_DAYS = 3;
+/** この時刻(端末の時計)をすぎても、今日の自分の記録がないと、ジト目になる */
+const NIGHT_HOUR = 20;
+
+/** 吹き出しの左に出す絵(表示の大きさ) */
+const FIGURE = Object.freeze({
+  reach: { src: "img/goma-reach.png", width: 46, height: 61 }, // 手をのばす: 記録の直後
+  sleep: { src: "img/goma-sleep.png", width: 64, height: 48 }, // ねむる: しばらく記録がない
+  jito: { src: "img/goma-jito.png", width: 58, height: 55 },   // ジト目: 夜になっても今日の記録がない
+});
 
 const LINE = Object.freeze({
   welcome: (user) => `おかえり、${user}。きょうは何につかったにゃ？`,
-  done: "きろくしたにゃ。ありがと。",
+  sleep: "…むにゃ。ひさしぶりだにゃ。",
+  jito: "きょうは、まだつけてないにゃ…",
+  done: "きろくしたにゃ。",
   undone: "とりけしたにゃ。なおして、もういちどどうぞ。",
   needCategory: "カテゴリをえらんでにゃ。",
   needMemo: "なにに使ったか、内容を書いてにゃ。",
@@ -29,8 +46,9 @@ const el = {
   photo: document.getElementById("photo"),
   pending: document.getElementById("pending"),
   pendingText: document.getElementById("pending-text"),
+  paw: document.getElementById("input-paw"),
+  goma: document.getElementById("input-goma"),
   line: document.getElementById("input-line"),
-  last: document.getElementById("last"),
   lastText: document.getElementById("last-text"),
   undo: document.getElementById("undo"),
   form: document.getElementById("entry"),
@@ -43,6 +61,7 @@ const el = {
   fieldSuggestions: document.getElementById("field-suggestions"),
   suggestions: document.getElementById("suggestions"),
   depositNote: document.getElementById("deposit-note"),
+  fieldAmount: document.getElementById("field-amount"),
   amountBox: document.getElementById("amount-box"),
   amount: document.getElementById("amount"),
   dateText: document.getElementById("date-text"),
@@ -58,19 +77,118 @@ const state = {
   kind: KIND.VARIABLE,   // 起動のたびに変動費から
   category: "",
   date: null,            // null = きょう(記録する瞬間の日付を使う) / 'YYYY-MM-DD' = 変更した日
-  last: null,            // 直前に記録した1件(とりけす用)
+  last: null,            // 直前に記録した1件(取り消す用)。吹き出しが挨拶に戻ったら null
   hiddenAt: 0,
+  // 吹き出しに出しているもの: "greeting" = 挨拶 / "done" = 記録の直後 / "message" = そのほかの一言(注意など)
+  mode: "greeting",
+  message: { text: "", tone: "" },
+  doneAt: 0,             // 記録の直後の吹き出しを出した時刻
+  doneTimer: 0,
 };
 
-// --- 一言 -------------------------------------------------------------------
+// --- 一言(吹き出し) ---------------------------------------------------------
 
-function say(text, tone = "") {
-  el.line.textContent = text;
+/** 'YYYY-MM-DD' どうしの日数の差(b - a) */
+function daysBetween(a, b) {
+  const [ay, am, ad] = a.split("-").map(Number);
+  const [by, bm, bd] = b.split("-").map(Number);
+  return Math.round((new Date(by, bm - 1, bd) - new Date(ay, am - 1, ad)) / 86400000);
+}
+
+/**
+ * 挨拶のときの、ごまちゃんのようす。優先順に:
+ *   "sleep"  … 自分の記録が3日以上ない
+ *   "jito"   … 20時をすぎたのに、今日の自分の記録がない
+ *   "normal" … いつもの挨拶
+ * 「自分の記録」= 記録した人が自分で、アプリから入れた記録(財布は自分でも共同口座でもよい。まだ送れていない分も数える。
+ *   「毎月の設定」の自動の記録や、フォームから取り込んだ記録は数えない)。
+ * 日にちは、記録の「日付」ではなく、記録した日(作成日時)で数える。
+ *   あとから前の日付でまとめて入れても「きょう、つけた」ことになり、先の日付で入れても「つけた日」は変わらないように。
+ * 記録が1件もない使いはじめは、寝かせない。
+ */
+function greetingMood() {
+  const user = state.user;
+  const { records } = applyQueue(store.getRecords(), queue.pendingOps(), user);
+  let latest = ""; // いちばん新しい「記録した日」
+  for (const r of records) {
+    if (!r || r["記録した人"] !== user || r["元"] !== "アプリ") continue;
+    const created = String(r["作成日時"] || "").slice(0, 10);
+    const day = isDateString(created) ? created : String(r["日付"] || "");
+    if (isDateString(day) && day > latest) latest = day;
+  }
+  // まだ一度も保存先から読みこめていないあいだは、記録があるかどうかわからないので、いつもの挨拶
+  if (!latest && !store.getSyncedAt()) return "normal";
+  const today = todayString();
+  if (latest && daysBetween(latest, today) >= SLEEP_DAYS) return "sleep";
+  if (new Date().getHours() >= NIGHT_HOUR && latest !== today) return "jito";
+  return "normal";
+}
+
+/** 吹き出しの左: 絵(name)を出す。null なら、肉球マークに戻す。絵は、はじめて出すときに読みこむ */
+function showFigure(name) {
+  const figure = name ? FIGURE[name] : null;
+  el.paw.style.display = figure ? "none" : "";
+  el.goma.hidden = !figure;
+  if (!figure) return;
+  if (el.goma.getAttribute("src") !== figure.src) {
+    el.goma.dataset.figure = name;
+    el.goma.width = figure.width;
+    el.goma.height = figure.height;
+    el.goma.src = figure.src;
+  }
+}
+
+function setLine(text, tone = "") {
+  // 同じ文字のときは書きかえない(読み上げが、くり返されないように)
+  if (el.line.textContent !== text) el.line.textContent = text;
   if (tone) {
     el.line.dataset.tone = tone;
   } else {
     delete el.line.dataset.tone;
   }
+}
+
+/** 吹き出しを、いまの状態で出しなおす */
+function renderBubble() {
+  if (state.mode === "done" && state.last) {
+    showFigure("reach");
+    setLine(LINE.done);
+  } else if (state.mode === "message") {
+    showFigure(null);
+    setLine(state.message.text, state.message.tone);
+  } else {
+    state.mode = "greeting";
+    const mood = greetingMood();
+    showFigure(mood === "normal" ? null : mood);
+    setLine(mood === "sleep" ? LINE.sleep : mood === "jito" ? LINE.jito : LINE.welcome(state.user));
+  }
+  renderLast();
+}
+
+/** 注意などの一言を出す */
+function say(text, tone = "") {
+  state.mode = "message";
+  state.message = { text, tone };
+  renderBubble();
+}
+
+/** 記録の直後の吹き出しを出す。少ししたら挨拶に戻す */
+function startDone(record) {
+  clearTimeout(state.doneTimer);
+  state.last = record;
+  state.mode = "done";
+  state.doneAt = Date.now();
+  state.doneTimer = setTimeout(endDone, DONE_SHOW_MS);
+  renderBubble();
+}
+
+/** 記録の直後の吹き出しを終えて、挨拶に戻す(時間がたった・次の入力を始めた)。「取り消す」も、ここまで */
+function endDone() {
+  if (state.mode !== "done") return;
+  clearTimeout(state.doneTimer);
+  state.last = null;
+  state.mode = "greeting";
+  renderBubble();
 }
 
 function clearInvalid() {
@@ -101,8 +219,22 @@ function renderKind() {
   el.fieldCategory.hidden = state.kind !== KIND.VARIABLE;
   el.fieldMemo.hidden = state.kind !== KIND.SPECIAL;
   el.depositNote.hidden = state.kind !== KIND.DEPOSIT;
+  renderPeek();
   renderSuggestions();
   renderWallet();
+}
+
+/**
+ * 金額欄の、のぞきごま。変動費のときだけ出す(特別費・共同へ入金は、縦の余白が足りない)。
+ * カテゴリのいちばん下の段の右はし(3列目)が空いていれば、そこに顔が入るので "tight"(上を空けない)。
+ * うまっていれば "room"(ボタンに重ならないように、上を空ける)
+ */
+function renderPeek() {
+  if (state.kind !== KIND.VARIABLE) {
+    el.fieldAmount.removeAttribute("data-peek");
+    return;
+  }
+  el.fieldAmount.setAttribute("data-peek", el.categories.children.length % 3 === 0 ? "room" : "tight");
 }
 
 function categoryList() {
@@ -132,6 +264,7 @@ function renderCategories() {
     button.append(label);
     el.categories.append(button);
   }
+  renderPeek();
 }
 
 /** 特別費の候補: 自分の財布と共同口座の、過去のメモ。新しい順・重複なしで数個 */
@@ -196,12 +329,16 @@ function renderPending() {
   el.pendingText.textContent = `未送信 ${count}件`;
 }
 
+/** 直前に記録した内容(例: 食費 ¥1,280)と「取り消す」。記録の直後だけ出す */
 function renderLast() {
-  el.last.hidden = !state.last;
-  if (!state.last) return;
   const r = state.last;
+  el.undo.hidden = !r;
+  el.lastText.hidden = !(r && state.mode === "done");
+  if (!r) return;
   const label = r["種類"] === KIND.VARIABLE ? r["項目"] : r["種類"] === KIND.SPECIAL ? r["メモ"] : KIND.DEPOSIT;
-  const parts = [`${label} ¥${formatAmount(r["金額"])}`, formatDateShort(r["日付"])];
+  const parts = [`${label} ¥${formatAmount(r["金額"])}`];
+  // きょう以外の日付で入れたとき・共同口座に入れたときは、まちがいに気づけるように添える
+  if (r["日付"] !== todayString()) parts.push(formatDateShort(r["日付"]));
   if (r["財布"] === WALLET_JOINT) parts.push(WALLET_JOINT);
   el.lastText.textContent = parts.join("・");
 }
@@ -210,18 +347,21 @@ function renderLast() {
 
 function selectWallet(wallet) {
   if (state.kind === KIND.DEPOSIT) return;
+  endDone();
   state.wallet = wallet;
   store.setWallet(wallet);
   renderWallet();
 }
 
 function selectKind(kind) {
+  endDone();
   state.kind = kind;
   clearInvalid();
   renderKind();
 }
 
 function selectCategory(name) {
+  endDone();
   state.category = name;
   el.categories.removeAttribute("data-invalid");
   setPressed(Array.from(el.categories.children), (b) => b.dataset.category === name);
@@ -250,6 +390,7 @@ function invalid(node, message, focusTarget) {
 /** 「きろくする」: その場で確かめて、キューに積み、入力欄を空にする(通信は待たない) */
 function submit(event) {
   event.preventDefault();
+  endDone();
   clearInvalid();
 
   const kind = state.kind;
@@ -291,17 +432,18 @@ function submit(event) {
   el.amount.blur();
   el.memo.blur();
   setPressed(Array.from(el.categories.children), () => false);
-  state.last = record;
-  renderLast();
   renderSuggestions();
-  say(LINE.done);
+  // 吹き出しを「きろくしたにゃ。」に(寝ていた・ジト目だったごまちゃんも、ここで起きる)
+  startDone(record);
 }
 
-/** 「とりけす」: 直前の1件を取り消して、内容を入力欄に戻す(直して入れ直せるように) */
+/** 「取り消す」: 直前の1件を取り消して、内容を入力欄に戻す(直して入れ直せるように) */
 function undo() {
   const record = state.last;
   if (!record) return;
+  clearTimeout(state.doneTimer);
   if (queue.cancel(record.id) === "failed") {
+    // 取り消せなかったときは、「取り消す」を残しておく(もういちど押せるように)
     say(LINE.storage, "warn");
     return;
   }
@@ -319,11 +461,11 @@ function undo() {
   renderCategories();
   renderKind();
   renderDate();
-  renderLast();
   say(LINE.undone);
 }
 
 function pickDate() {
+  endDone();
   const value = el.datePicker.value;
   // iPhone の「リセット」で空になったら、きょうに戻す
   state.date = value && isDateString(value) ? value : null;
@@ -347,14 +489,16 @@ export function showInput() {
   if (state.user !== user) {
     // 持ち主が変わった(登録し直した)ら、入力途中の内容は捨てる
     state.user = user;
+    clearTimeout(state.doneTimer);
     state.last = null;
+    state.mode = "greeting";
     state.kind = KIND.VARIABLE;
     state.category = "";
     state.date = null;
     el.memo.value = "";
     el.amount.value = "";
-    say(LINE.welcome(user));
   }
+  expireDone();
   state.wallet = store.getWallet();
   el.wallets[0].textContent = user || "自分";
   el.depositNote.textContent = `${user}の財布から共同口座への入金として記録します。ふたりの画面に表示されます。`;
@@ -362,8 +506,13 @@ export function showInput() {
   renderCategories();
   renderKind();
   renderDate();
-  renderLast();
+  renderBubble();
   renderPending();
+}
+
+/** 記録の直後の吹き出しの時間がすぎていたら、挨拶に戻す(裏にいるあいだはタイマーが止まることがあるので、戻ってきたときにも確かめる) */
+function expireDone() {
+  if (state.mode === "done" && Date.now() - state.doneAt >= DONE_SHOW_MS) endDone();
 }
 
 /** 保存先から新しいデータが届いたとき: カテゴリと候補を出しなおす(入力途中の内容は変えない) */
@@ -371,6 +520,8 @@ export function refreshData() {
   if (!state.user) return;
   renderCategories();
   renderSuggestions();
+  // 挨拶のようす(ねむる・ジト目)は、届いた記録で変わることがある
+  if (state.mode === "greeting") renderBubble();
 }
 
 /** 画面に戻ってきたとき: 日付の表示を直す。長く離れていたら、変更していた日付を「きょう」に戻す */
@@ -380,6 +531,10 @@ export function onResume() {
   }
   state.hiddenAt = 0;
   renderDate();
+  if (!state.user) return;
+  expireDone();
+  // 日付や時刻が変わっていれば、挨拶のようす(ねむる・ジト目)も変わる
+  if (state.mode === "greeting") renderBubble();
 }
 
 export function onHide() {
@@ -400,11 +555,15 @@ export function initInput() {
   el.suggestions.addEventListener("click", (event) => {
     const button = event.target.closest("[data-memo]");
     if (!button) return;
+    endDone();
     el.memo.value = button.dataset.memo;
     el.memo.removeAttribute("data-invalid");
     if (!el.amount.value) el.amount.focus();
   });
-  el.memo.addEventListener("input", () => el.memo.removeAttribute("data-invalid"));
+  el.memo.addEventListener("input", () => {
+    endDone();
+    el.memo.removeAttribute("data-invalid");
+  });
   el.memo.addEventListener("keydown", (event) => {
     // キーボードの「次へ」で金額へ(変換中の Enter は無視)
     if (event.key === "Enter" && !event.isComposing) {
@@ -413,6 +572,7 @@ export function initInput() {
     }
   });
   el.amount.addEventListener("input", () => {
+    endDone();
     setAmountText(el.amount.value);
     el.amountBox.removeAttribute("data-invalid");
   });
@@ -420,6 +580,7 @@ export function initInput() {
   el.datePicker.addEventListener("change", pickDate);
   el.datePicker.addEventListener("click", openPicker);
   el.dateToday.addEventListener("click", () => {
+    endDone();
     state.date = null;
     renderDate();
   });
@@ -432,10 +593,17 @@ export function initInput() {
       renderPending();
     } else if (event.type === "dropped" && event.op.op === "add") {
       if (state.last && state.last.id === event.op.record.id) {
+        clearTimeout(state.doneTimer);
         state.last = null;
-        renderLast();
       }
       say(LINE.dropped, "warn");
     }
+  });
+
+  // 「きろくする」を押してすぐ絵が出るように、手があいたときに先に読みこんでおく(登録済みのときだけ)
+  window.addEventListener("load", () => {
+    setTimeout(() => {
+      if (store.getUser()) new Image().src = FIGURE.reach.src;
+    }, 1500);
   });
 }

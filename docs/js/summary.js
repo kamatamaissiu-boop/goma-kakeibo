@@ -48,6 +48,9 @@ export function parseAutoId(id) {
   return m ? { month: `${m[1]}-${m[2]}`, itemId: m[3] } : null;
 }
 
+/** 共同口座が「順調」(香箱座りの絵)になる、支出 ÷ 入金 の上限 */
+export const JOINT_GOOD_RATIO = 0.7;
+
 /** カテゴリが空の変動費を、まとめる名前 */
 export const NO_CATEGORY = "未分類";
 
@@ -205,6 +208,10 @@ export function summarize(records, user, month) {
     // ゲージの進み(0〜1)。入金が 0 で支出があるとき・使いすぎのときは、右端まで
     gauge: ratio === null ? (jointSpend > 0 ? 1 : 0) : Math.min(1, ratio),
     state,
+    // ごまちゃんのようす(絵): 支出が入金の 70% 以下 = 順調("loaf" 香箱座り) / 入金を超えた = 使いすぎ("jito" ジト目)。
+    // 入金の記録がない月は、ジト目にしない(入金をまだ入れていないだけかもしれないので)。
+    // 70% を超えて 100% までは、絵なし(一言は、80% 以上で「そろそろ気をつけるにゃ」)
+    mood: ratio === null ? "" : ratio > 1 ? "jito" : ratio <= JOINT_GOOD_RATIO ? "loaf" : "",
   };
 
   // --- 自分の財布 ---
@@ -253,6 +260,19 @@ export function summarize(records, user, month) {
     fixed,
     saving,
     income,
+    // 収入との差し引き。その月に確定した自分の収入(手取り)があるときだけ(なければ null)。
+    //   のこり = 収入(手取り) − 使ったお金(変動費+特別費+固定費 = 上の total) − 共同口座へ入金 − 貯めたお金(貯蓄)
+    //   税金・社会保険は、手取りにはじめから入っていないので、引かない。相手の収入は、ここには来ない(自分の財布の記録だけ)
+    balance:
+      income > 0
+        ? {
+            income,
+            spend: walletTotal,
+            deposit: walletDeposit,
+            saving: saving.total,
+            remain: income - walletTotal - walletDeposit - saving.total,
+          }
+        : null,
   };
 
   // 明細には、収入・税金を出さない(「毎月の設定」で見る)

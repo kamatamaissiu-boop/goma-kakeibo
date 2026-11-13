@@ -73,23 +73,27 @@
            カメラボタン(アルバムへ)も段階4で、この枠の右上に足す -->
       <div class="photo" id="photo" data-state="placeholder">
         <img class="photo__img" id="photo-img" alt="" hidden>
-        <img class="photo__goma" src="img/goma-round.svg" alt="ごまちゃん" width="126" height="120">
+        <img class="photo__goma" src="img/goma-face.png" alt="ごまちゃん" width="104" height="122" decoding="async">
         <!-- 未送信があるときだけ出す。押すと送り直す -->
         <button class="pending" id="pending" type="button" hidden>
           <span id="pending-text">未送信 0件</span>
         </button>
       </div>
 
-      <!-- ごまちゃんの一言。記録の直後は、下に「なにを記録したか」と「とりけす」が出る -->
-      <div class="bubble bubble--over">
-        <svg class="bubble__paw" aria-hidden="true" width="18" height="18" fill="currentColor"><use href="#i-paw"></use></svg>
+      <!-- ごまちゃんの一言。ふだんは肉球マークと挨拶。
+           記録の直後は、絵(手をのばす)+「きろくしたにゃ。」+「なにを記録したか」+「取り消す」に変わり、少しすると挨拶に戻る。
+           しばらく記録がないとき(ねむる)・夜になっても今日の記録がないとき(ジト目)も、絵が出る。絵は JS(input.js)が入れる -->
+      <div class="bubble bubble--over" id="input-bubble">
+        <svg class="bubble__paw" id="input-paw" aria-hidden="true" width="18" height="18" fill="currentColor"><use href="#i-paw"></use></svg>
+        <img class="bubble__goma" id="input-goma" alt="" aria-hidden="true" decoding="async" hidden>
         <div class="bubble__body">
           <p id="input-line" role="status" aria-live="polite"></p>
-          <div class="last" id="last" hidden>
-            <span class="last__text" id="last-text"></span>
-            <button class="last__undo" id="undo" type="button">とりけす</button>
-          </div>
+          <p class="last__text" id="last-text" hidden></p>
         </div>
+        <button class="last__undo" id="undo" type="button" hidden>取り消す</button>
+        <!-- 版 0.4.0 までの画面(JS)が、新しい版に入れ替わる直前に1回だけ、この HTML で動くことがある。
+             そのときに止まらないよう、前の版が使っていた部品を、見えない形で残しておく(入れ替わりが済めば使わない) -->
+        <div id="last" hidden></div>
       </div>
 
       <form class="entry" id="entry" novalidate autocomplete="off">
@@ -132,9 +136,11 @@
         <!-- 共同へ入金: 追加の入力なし -->
         <p class="note" id="deposit-note" hidden></p>
 
-        <div class="field">
+        <!-- 金額。変動費のときだけ、欄の右上から、のぞきごまが顔を出す(data-peek は JS が付け外しする) -->
+        <div class="field" id="field-amount">
           <label class="label" for="amount">金額</label>
           <div class="amount" id="amount-box">
+            <img class="amount__peek" src="img/goma-peek.png" alt="" aria-hidden="true" width="64" height="46" loading="lazy" decoding="async">
             <span class="amount__yen" aria-hidden="true">¥</span>
             <input class="amount__input" id="amount" name="amount" type="text" inputmode="numeric" pattern="[0-9,]*"
                    autocomplete="off" enterkeyhint="done" placeholder="0" maxlength="10">
@@ -179,9 +185,9 @@
         <!-- 「なおしたにゃ」などの一言(あるときだけ) -->
         <p class="look__notice" id="look-notice" role="status" aria-live="polite" hidden></p>
 
-        <!-- 記録が1件もない月・読み込み前 -->
+        <!-- 記録が1件もない月(後ろ姿)・読み込み前(顔)。絵は JS(view.js)が入れる -->
         <div class="card look-empty" id="look-empty" hidden>
-          <img class="look-empty__goma" src="img/goma-round.svg" alt="ごまちゃん" width="105" height="100">
+          <img class="look-empty__goma" id="look-empty-goma" alt="ごまちゃん" decoding="async">
           <p class="look-empty__text" id="look-empty-text"></p>
         </div>
 
@@ -194,18 +200,20 @@
             <div class="joint__head">
               <div class="joint__photo" id="joint-photo" data-state="placeholder">
                 <img class="joint__photo-img" id="joint-photo-img" alt="" hidden>
-                <img class="joint__goma" src="img/goma-round.svg" alt="" aria-hidden="true" width="76" height="72">
+                <img class="joint__goma" src="img/goma-face.png" alt="" aria-hidden="true" width="68" height="80" loading="lazy" decoding="async">
               </div>
               <div class="joint__main">
                 <div class="label" id="joint-label">共同口座の残り</div>
                 <div class="joint__remain" id="joint-remain"></div>
                 <div class="joint__line" id="joint-line"></div>
               </div>
+              <!-- ようすの絵: 順調(香箱座り)・使いすぎ(ジト目)のときだけ。絵は JS(view.js)が入れる -->
+              <img class="joint__mood" id="joint-mood" alt="" aria-hidden="true" decoding="async" hidden>
             </div>
             <!-- ゲージ: 支出 ÷ 入金。先頭のごまちゃんが、使った分だけ進む(--p は 0〜1) -->
             <div class="gauge" id="gauge" role="img">
               <div class="gauge__track"><div class="gauge__fill"></div></div>
-              <img class="gauge__goma" src="img/goma-round.svg" alt="" aria-hidden="true" width="32" height="30">
+              <img class="gauge__goma" src="img/goma-face.png" alt="" aria-hidden="true" width="31" height="36" loading="lazy" decoding="async">
             </div>
             <div class="joint__nums">
               <div class="joint__col">
@@ -226,7 +234,9 @@
           <!-- (段階4)「今週の肉球スタンプ」のカードは、ここに足す -->
 
           <!-- 自分の財布のカード: 合計、カテゴリ別の横棒(変動費)、特別費は1行ずつ。
-               その下に、固定費(合計に入れる)・貯蓄・共同口座へ入金・収入(合計に入れない)を1行ずつ -->
+               その下に、固定費(合計に入れる)を1行。
+               収入を確定した月は「収入との差し引き」(収入 − 使ったお金 − 共同口座へ入金 − 貯めたお金 = のこり)。
+               収入がまだの月は、貯蓄・共同口座へ入金(合計に入れない)を1行ずつと、収入を入れる案内 -->
           <section class="card wallet" aria-labelledby="wallet-title">
             <div class="wallet__head">
               <h2 class="card__title" id="wallet-title"></h2>
@@ -240,6 +250,17 @@
               <span>共同口座へ入金<span class="wallet__deposit-note">（合計には入れていません）</span></span>
               <span class="wallet__deposit-amount" id="wallet-deposit-amount"></span>
             </div>
+            <!-- 収入との差し引き(その月の収入を「毎月の設定」で確定してあるときだけ)。行は JS が作る -->
+            <div class="balance" id="wallet-balance" hidden>
+              <div class="label">収入との差し引き</div>
+              <div class="balance__rows" id="wallet-balance-rows"></div>
+              <div class="balance__remain">
+                <span class="label">のこり</span>
+                <span class="balance__amount" id="wallet-balance-remain"></span>
+              </div>
+            </div>
+            <!-- 収入がまだの月: 押すと「毎月の設定」を、その月で開く -->
+            <button class="wallet__hint" id="wallet-balance-hint" type="button" hidden>毎月の設定で収入を入れると、のこりが出るにゃ</button>
             <button class="card__more" type="button" data-details="self" id="wallet-more"></button>
           </section>
 
@@ -340,27 +361,26 @@
     </section>
 
     <!-- ===== 合言葉の入力(初回だけ) ===== -->
-    <section class="view view--plain" id="view-login" aria-label="合言葉" hidden>
-      <div class="hero">
-        <img class="hero__goma" src="img/goma-round.svg" alt="ごまちゃん" width="168" height="160">
-        <p class="bubble">
-          <svg class="bubble__paw" aria-hidden="true" width="18" height="18" fill="currentColor"><use href="#i-paw"></use></svg>
-          <span>はじめまして。合言葉をおしえてにゃ。</span>
-        </p>
+    <!-- 表紙の絵、「合言葉をおしえてにゃ」、入力欄、「はじめる」。この画面では下のタブを出さない(app.js) -->
+    <section class="view view--login" id="view-login" aria-label="合言葉" hidden>
+      <div class="cover">
+        <img class="cover__img" src="img/goma-cover.png" alt="ごまちゃん" width="300" height="335" loading="lazy" decoding="async">
       </div>
 
-      <div class="card card--cream connect" id="connect">
-        <p class="connect__status" id="connect-status" role="status" aria-live="polite"></p>
+      <div class="connect login-box" id="connect">
+        <label class="login__title" for="aikotoba">合言葉をおしえてにゃ</label>
+        <!-- まちがい・通信できないときなどの一言(あるときだけ) -->
+        <p class="connect__status" id="connect-status" role="status" aria-live="polite" hidden></p>
         <form class="login" id="login-form" novalidate>
-          <label class="label" for="aikotoba">合言葉</label>
-          <input class="input" id="aikotoba" name="aikotoba" type="text"
+          <input class="input login__input" id="aikotoba" name="aikotoba" type="text"
                  autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
-                 enterkeyhint="go" placeholder="じぶんの合言葉" required>
+                 enterkeyhint="go" required>
           <button class="btn btn--primary" id="login-button" type="submit">
             <svg class="btn__paw" aria-hidden="true" width="20" height="20" fill="currentColor"><use href="#i-paw"></use></svg>
-            <span id="login-button-text">この iPhone を登録する</span>
+            <span id="login-button-text">はじめる</span>
           </button>
         </form>
+        <p class="login__note">きくのは、さいしょの1回だけ</p>
       </div>
     </section>
 
@@ -372,7 +392,7 @@
       <div class="mhead">
         <div class="mhead__photo" id="monthly-photo" data-state="placeholder">
           <img class="mhead__photo-img" id="monthly-photo-img" alt="" hidden>
-          <img class="mhead__goma" src="img/goma-round.svg" alt="" aria-hidden="true" width="54" height="51">
+          <img class="mhead__goma" src="img/goma-face.png" alt="" aria-hidden="true" width="48" height="56" loading="lazy" decoding="async">
         </div>
         <div class="mhead__text">
           <h1 class="mhead__title">毎月の設定</h1>
@@ -391,12 +411,15 @@
         </button>
       </div>
 
-      <!-- 「確定したにゃ」などの一言(あるときだけ) -->
-      <p class="look__notice" id="monthly-notice" role="status" aria-live="polite" hidden></p>
+      <!-- 「確定したにゃ」などの一言(あるときだけ)。月を確定できたときは、へそ天のごまちゃんを添える -->
+      <div class="look__notice mnotice" id="monthly-notice" role="status" aria-live="polite" hidden>
+        <img class="mnotice__goma" id="monthly-notice-goma" src="img/goma-hesoten.png" alt="" aria-hidden="true" width="42" height="64" loading="lazy" decoding="async" hidden>
+        <p id="monthly-notice-text"></p>
+      </div>
 
       <!-- 読み込み前・保存先(GAS)が古い版のとき -->
       <div class="card look-empty" id="monthly-wait" hidden>
-        <img class="look-empty__goma" src="img/goma-round.svg" alt="ごまちゃん" width="105" height="100">
+        <img class="look-empty__goma" src="img/goma-face.png" alt="ごまちゃん" width="85" height="100" loading="lazy" decoding="async">
         <p class="look-empty__text" id="monthly-wait-text"></p>
         <p class="hint" id="monthly-wait-note" hidden></p>
       </div>
@@ -420,7 +443,7 @@
 
         <!-- 固定費と貯蓄。カードの上から、のぞきごま -->
         <section class="card mcard mcard--peek" aria-labelledby="monthly-fixed-title">
-          <img class="mcard__peek" src="img/goma-peek.svg" alt="" aria-hidden="true" width="70" height="38">
+          <img class="mcard__peek" src="img/goma-peek.png" alt="" aria-hidden="true" width="72" height="51" loading="lazy" decoding="async">
           <div class="mcard__head">
             <h2 class="card__title" id="monthly-fixed-title">固定費と貯蓄</h2>
             <button class="mcard__link" type="button" data-add="joint-fixed">追加</button>
@@ -505,7 +528,7 @@
   </div>
 
   <!-- 下のタブ -->
-  <nav class="tabs" aria-label="メニュー">
+  <nav class="tabs" id="tabs" aria-label="メニュー">
     <button class="tab" type="button" data-tab="input" aria-current="page">
       <svg class="tab__ears" aria-hidden="true" width="30" height="9"><use href="#i-ears"></use></svg>
       <svg class="tab__icon" aria-hidden="true" width="24" height="24" fill="currentColor"><use href="#i-paw"></use></svg>
