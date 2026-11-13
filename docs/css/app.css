@@ -1,0 +1,355 @@
+/* ==========================================================================
+   ごまちゃん家計簿 共通スタイル
+   色・角丸は仕様書 7章(見た目)のとおり。見本 HTML(design/mock)の寸法を踏襲。
+   ========================================================================== */
+
+:root {
+  /* --- 色 --- */
+  --c-bg: #F4EFE8;            /* ラグのベージュ: 背景 */
+  --c-white: #FFFFFF;         /* 白: カード、入力欄、未選択のボタン */
+  --c-ink: #2E2A28;           /* 肉球の黒: 文字、選択中のボタン、「きろくする」 */
+  --c-gray: #6B6560;          /* グレー文字: ラベル、補足 */
+  --c-line: #DDD5CA;          /* 枠線: 入力欄・ボタンの枠 */
+  --c-line-soft: #E8E0D5;     /* タブ上の区切り線(見本 HTML より) */
+  --c-amber: #C39A3B;         /* 琥珀の目: ゲージ */
+  --c-amber-light: #F3DDAE;   /* 琥珀(薄): 選択中のカテゴリ、スタンプの地 */
+  --c-amber-dark: #8A6417;    /* 琥珀(濃): 選択中カテゴリの枠、肉球マーク */
+  --c-cream: #FBF3E1;         /* クリーム: お知らせ・目安のカード */
+  --c-silver: #B4B2B6;        /* シルバーの毛: イラスト、内訳の横棒 */
+  --c-silver-dark: #8F8D92;
+  --c-pink-dark: #8A4B3C;     /* 鼻のピンク(濃): 未入力などの注意 */
+
+  /* --- 角丸 --- */
+  --r-card: 20px;             /* カード */
+  --r-control: 14px;          /* ボタン・入力欄 */
+  --r-primary: 18px;          /* 「きろくする」などの主ボタン */
+
+  /* --- 寸法 --- */
+  --tap: 44px;                /* 指で押せる最小の高さ */
+  --gutter: 20px;             /* 画面左右の余白 */
+  --tabs-h: 76px;             /* 下のタブの高さ(ホームバーの余白は別) */
+
+  /* --- ノッチ・ホームバーの余白(viewport-fit=cover とセット) --- */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+
+  --font: "Zen Maru Gothic", "Hiragino Maru Gothic ProN", "Hiragino Sans", sans-serif;
+}
+
+/* --- 土台 --------------------------------------------------------------- */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  height: 100%;
+  background: var(--c-bg);
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--c-bg);
+  color: var(--c-ink);
+  font-family: var(--font);
+  font-size: 15px;
+  font-weight: 400;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-y: none;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+  color: inherit;
+}
+
+button {
+  touch-action: manipulation; /* ダブルタップでの拡大を防ぎ、反応を速くする */
+}
+
+[hidden] {
+  display: none !important;
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+/* --- 全体の枠: 上に画面、下にタブ ---------------------------------------- */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+  max-width: 520px; /* パソコンで開いたときに広がりすぎないように */
+  margin: 0 auto;
+}
+
+.screen {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: calc(var(--safe-top) + 16px) calc(var(--safe-right) + var(--gutter)) 20px calc(var(--safe-left) + var(--gutter));
+}
+
+/* --- 共通部品 ----------------------------------------------------------- */
+
+/* ラベル: 12px・太字・グレー */
+.label {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.5;
+  color: var(--c-gray);
+}
+
+/* カード */
+.card {
+  background: var(--c-white);
+  border-radius: var(--r-card);
+  padding: 16px;
+}
+
+.card--cream {
+  background: var(--c-cream);
+}
+
+/* 入力欄(iPhone が勝手に拡大しないよう、文字は必ず 16px 以上) */
+.input {
+  display: block;
+  width: 100%;
+  height: 52px;
+  padding: 0 16px;
+  border: 1.5px solid var(--c-line);
+  border-radius: var(--r-control);
+  background: var(--c-white);
+  font-size: 17px;
+  font-weight: 500;
+  outline: none;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.input::placeholder {
+  color: var(--c-silver-dark);
+  font-weight: 400;
+}
+
+.input:focus {
+  border-color: var(--c-ink);
+}
+
+.input[aria-invalid="true"] {
+  border-color: var(--c-pink-dark);
+}
+
+/* ボタン */
+.btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: var(--tap);
+  padding: 0 16px;
+  border: 1.5px solid var(--c-line);
+  border-radius: var(--r-control);
+  background: var(--c-white);
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+/* 主ボタン(「きろくする」と同じ見た目) */
+.btn--primary {
+  height: 56px;
+  border: none;
+  border-radius: var(--r-primary);
+  background: var(--c-ink);
+  color: var(--c-white);
+  font-size: 17px;
+}
+
+.btn--primary:active {
+  opacity: 0.85;
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.btn__paw {
+  flex-shrink: 0;
+  color: var(--c-amber-light);
+}
+
+/* 文字だけのボタン(「変更」などと同じ見た目) */
+.btn-text {
+  min-height: var(--tap);
+  padding: 0 14px;
+  border: none;
+  background: transparent;
+  color: var(--c-gray);
+  font-size: 14px;
+  font-weight: 700;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* ごまちゃんの一言(吹き出し) */
+.bubble {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  background: var(--c-white);
+  border-radius: 18px;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.bubble__paw {
+  flex-shrink: 0;
+  color: var(--c-amber-dark);
+}
+
+/* --- 準備中の画面 ------------------------------------------------------- */
+
+.hero {
+  flex: 1 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 8px 0;
+  text-align: center;
+}
+
+.hero__title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--c-gray);
+  letter-spacing: 0.08em;
+}
+
+.hero__goma {
+  width: 168px;
+  height: auto;
+}
+
+.hero__note {
+  font-size: 12px;
+  color: var(--c-gray);
+}
+
+/* --- 保存先とのつながり(接続テスト・合言葉) ----------------------------- */
+
+.connect {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.connect__status {
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.6;
+}
+
+.connect__status[data-tone="warn"] {
+  color: var(--c-pink-dark);
+}
+
+.connect__status[data-tone="ok"] {
+  font-weight: 700;
+}
+
+.login {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.connect .btn-text {
+  align-self: center;
+}
+
+/* --- 下のタブ(猫耳タブ) ------------------------------------------------- */
+
+.tabs {
+  flex-shrink: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  height: calc(var(--tabs-h) + var(--safe-bottom));
+  padding: 0 var(--safe-right) var(--safe-bottom) var(--safe-left);
+  background: var(--c-white);
+  border-top: 1px solid var(--c-line-soft);
+}
+
+.tab {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-height: var(--tap);
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--c-gray);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+/* 猫耳は、開いている画面のタブにだけ出す(場所は常に確保してガタつかせない) */
+.tab__ears {
+  fill: var(--c-ink);
+  visibility: hidden;
+}
+
+.tab__icon {
+  flex-shrink: 0;
+}
+
+.tab[aria-current="page"] {
+  color: var(--c-ink);
+  font-weight: 700;
+}
+
+.tab[aria-current="page"] .tab__ears {
+  visibility: visible;
+}
+
+/* --- 動きを減らす設定の人には、アニメーションを止める --------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}

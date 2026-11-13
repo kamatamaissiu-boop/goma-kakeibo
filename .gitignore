@@ -1,0 +1,26 @@
+# 依存パッケージ(このアプリはビルド不要。入れても公開しない)
+node_modules/
+package-lock.json
+
+# OS・エディタが作るファイル
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# ログ・一時ファイル
+*.log
+*.tmp
+
+# Google Apps Script の接続情報(clasp を使う場合)
+.clasp.json
+.clasprc.json
+
+# 秘密にしたいメモ(合言葉などは絶対にコミットしない)
+.env
+.env.*
+secret*.txt
+
+# 開発メモ(公開しない)
+引き継ぎ.md
