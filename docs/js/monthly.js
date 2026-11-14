@@ -7,6 +7,8 @@
 //     失敗しても入力は消えない。もういちど押せば送り直せる。
 //   - 保存先(GAS)が古い版のあいだは、「保存先の更新が必要にゃ」と出すだけで、何も送らない。
 //   - 行の金額は「今月だけ」の値。「毎月の金額」を変えるときは、なまえを押して項目をなおす。
+//   - 共同口座の項目は2人で共通(あとから確定した人の値になる)。ただし、自分がさわっていない金額は送らない
+//     (相手が入れた金額を、この端末の古い内容で書きもどさないため)。
 
 import { ApiError, addMonthlyItem, closeMonth, updateMonthlyItem } from "./api.js";
 import { WALLET_JOINT } from "./config.js";
@@ -423,12 +425,19 @@ function render() {
 
   // 固定費と貯蓄
   el.fixed.textContent = "";
-  const section = (title, key, list, none) => {
+  const section = (title, key, list, none, note) => {
     el.fixed.append(groupHead(title, key));
+    if (note && list.length > 0) el.fixed.append(node("p", "mgroup__note", note));
     for (const item of list) el.fixed.append(buildRow(item, base(item), ""));
     if (list.length === 0) el.fixed.append(node("p", "mcard__none", none));
   };
-  section("共同口座", "jointFixed", groups.jointFixed, "共同口座の固定費は、まだないにゃ。");
+  section(
+    "共同口座",
+    "jointFixed",
+    groups.jointFixed,
+    "共同口座の固定費は、まだないにゃ。",
+    "2人で共通の金額です（自分の負担分ではなく、全体の金額）。なおすと、相手の画面でも変わります。"
+  );
   section(user, "selfFixed", groups.selfFixed, `${user}の固定費は、まだないにゃ。`);
   section("貯蓄（貯めたお金）", "saving", groups.saving, "貯蓄の項目は、まだないにゃ。");
 
@@ -480,6 +489,20 @@ async function submit() {
   const removes = [];
   for (const item of state.shown.items) {
     const amount = Number(valueOf(item.id)) || 0;
+    // 共同口座の項目で、自分は金額をさわっていないもの: すでに記録があれば、送らない(保存先にある金額のままにする)。
+    // この端末の内容が古いと、相手があとから入れ直した金額を、古い金額で書きもどしてしまうため。
+    // 記録の財布・種類・なまえが項目とちがうとき(シートで持ち主を書きかえた等)は、いままでどおり送って、そろえる
+    const record = state.shown.autoMap.get(item.id);
+    if (
+      item["持ち主"] === WALLET_JOINT &&
+      !state.edits.has(item.id) &&
+      record &&
+      record["財布"] === item["持ち主"] &&
+      record["種類"] === item["区分"] &&
+      record["項目"] === item["項目名"]
+    ) {
+      continue;
+    }
     if (amount > 0) {
       amounts[item.id] = amount;
     } else if (item["持ち主"] === user || state.shown.autoMap.has(item.id)) {

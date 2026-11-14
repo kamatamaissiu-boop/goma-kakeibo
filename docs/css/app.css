@@ -1748,6 +1748,14 @@ button.row:active {
   padding-top: 2px;
 }
 
+/* 小見出しの下の、ひとこと(共同口座の金額は2人で共通、など) */
+.mgroup__note {
+  margin: -2px 0 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--c-gray);
+}
+
 .mgroup--total {
   padding: 8px 0 2px;
   border-top: 1px solid #EDE6DC;

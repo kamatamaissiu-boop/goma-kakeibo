@@ -121,6 +121,8 @@ function selectTab(name) {
   }
   render();
   el.screen.scrollTop = 0;
+  // 「毎月の設定」は、開くたびに最新を取り直す(相手が確定した共同口座の金額を、古いまま出さないように)
+  if (name === "monthly") syncNow();
 }
 
 /** 合言葉の画面の、状態の1行(空なら出さない)。tone: "" | "warn" */
