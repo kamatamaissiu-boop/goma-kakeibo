@@ -101,6 +101,20 @@ p {
   margin: 0 auto;
 }
 
+/* 入力画面でキーボードが出ているあいだ(JS の input.js が、html に data-kb を付ける)。
+   iPhone では、キーボードが出ても 100dvh は変わらず、下の「きろくする」がキーボードの裏に回る。
+   そこで、枠を「見えている範囲」(visualViewport)の高さ・位置に合わせ、下のタブは、そのあいだだけ隠す
+   → 「きろくする」がキーボードのすぐ上に来て、キーボードを閉じなくても押せる */
+html[data-kb] .app {
+  position: relative;
+  top: var(--kb-top, 0px);
+  height: var(--kb-h, 100dvh);
+}
+
+html[data-kb] .tabs {
+  display: none;
+}
+
 .screen {
   flex: 1 1 auto;
   min-height: 0;

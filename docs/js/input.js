@@ -24,6 +24,15 @@ const SLEEP_DAYS = 3;
 const NIGHT_HOUR = 20;
 /** アプリを離れてこの時間がたってから戻ったら、「開いた」と見なして、上の写真を別の1枚に替える */
 const PHOTO_SHUFFLE_MS = 30 * 1000;
+/** 見えている高さ(visualViewport)が、画面の高さよりこれ以上低いとき、「キーボードが出ている」と見なす */
+const KEYBOARD_MIN_PX = 60;
+/** 入力欄にフォーカスしてから、位置を合わせ直すタイミング(ミリ秒)。
+    iPhone のキーボードは少しかけて出てくるうえ、出きった合図(visualViewport の resize)が来ないこともあるので、念のため */
+const REVEAL_RETRY_MS = [60, 300, 600, 1000];
+/** 記録の直後に上へ戻すとき、この時間のあいだは、キーボードが閉じて画面の高さが変わっても、上へ戻しなおす */
+const TOP_KEEP_MS = 1500;
+/** 上へ戻しはじめてから、この時間がたっても戻りきっていなければ、その場で上へ(なめらかな動きは、ふつうこれより早く終わる) */
+const TOP_SETTLE_MS = 700;
 
 /** 吹き出しの左に出す絵(表示の大きさ) */
 const FIGURE = Object.freeze({
@@ -46,6 +55,9 @@ const LINE = Object.freeze({
 });
 
 const el = {
+  screen: document.getElementById("screen"), // 画面の中身をスクロールさせている入れ物(window は動かない)
+  view: document.getElementById("view-input"),
+  footer: document.querySelector("#entry .entry__footer"),
   photo: document.getElementById("photo"),
   photoImg: document.getElementById("photo-img"),
   albumOpen: document.getElementById("album-open"),
@@ -206,6 +218,204 @@ function clearInvalid() {
   for (const node of [el.categories, el.memo, el.amountBox]) {
     node.removeAttribute("data-invalid");
   }
+}
+
+// --- 画面の位置(入力中の欄を見えるところへ・記録したら上へ) -------------------
+//
+// スクロールするのは window ではなく、.screen(#screen)。
+// iPhone では、キーボードが出ても画面の高さ(window.innerHeight・100dvh)は変わらず、
+// 見えている範囲(visualViewport)だけが低くなる。そのままだと、下に固定した「きろくする」と金額欄が、
+// キーボードの裏に回ってしまう。そこで、キーボードが出ているあいだだけ、
+//   1. 全体の枠(.app)を、見えている範囲の高さに合わせる(html に data-kb を付ける。下のタブは、そのあいだ隠す)
+//      → 「きろくする」が、キーボードのすぐ上に来る
+//   2. .screen をスクロールして、入力中の欄を、「きろくする」より上の見える範囲に入れる
+
+const pos = {
+  keyboard: false, // キーボードが出ている(と見なして、枠を合わせている)
+  timers: [],      // 位置を合わせ直すタイマー
+  frame: 0,
+  target: -1,      // さいごに向かわせたスクロール位置(同じ場所へ、何度もスクロールを掛けなおさないように)
+  targetAt: 0,
+  seenTop: -1,     // そのとき見たスクロール位置(動いている途中かどうかを見る)
+  topUntil: 0,     // この時刻までは、上へ戻している途中
+  topTimer: 0,
+  safeTop: null,   // 画面の上の、時計の行の高さ(中身がスクロールすると、その下にもぐる)
+};
+
+function scrollBehavior() {
+  const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  return reduce ? "auto" : "smooth";
+}
+
+/** 画面の上の、時計の行の高さ(px)。CSS の safe-area を、見えない部品で測る */
+function safeTop() {
+  if (pos.safeTop === null) {
+    const probe = document.createElement("div");
+    probe.style.cssText =
+      "position:fixed;top:0;left:0;width:0;height:env(safe-area-inset-top,0px);visibility:hidden;pointer-events:none";
+    document.body.append(probe);
+    pos.safeTop = probe.offsetHeight || 0;
+    probe.remove();
+  }
+  return pos.safeTop;
+}
+
+/** いま文字を打っている欄(金額・特別費の内容)。なければ null */
+function editingField() {
+  const active = document.activeElement;
+  return active === el.amount || active === el.memo ? active : null;
+}
+
+/** キーボードが出ているあいだ、全体の枠(.app)を、見えている範囲に合わせる。引っこんだら、元に戻す */
+function fitToKeyboard() {
+  const vv = window.visualViewport;
+  const root = document.documentElement;
+  // 入力画面だけ。指で拡大しているとき(scale が 1 でない)は、キーボードと区別できないので何もしない
+  const on =
+    Boolean(vv) && !el.view.hidden && Math.abs(vv.scale - 1) < 0.01 && window.innerHeight - vv.height > KEYBOARD_MIN_PX;
+  if (on) {
+    // iPhone は、キーボードを出すときにページごと上へずらすことがある。枠を合わせるので、ずれは戻す
+    if (window.scrollY || window.scrollX) window.scrollTo(0, 0);
+    root.style.setProperty("--kb-h", `${vv.height}px`);
+    // 戻しきれなかったずれ(見えている範囲の上端)には、枠のほうを合わせる
+    root.style.setProperty("--kb-top", `${Math.max(0, vv.offsetTop)}px`);
+    root.setAttribute("data-kb", "");
+  } else if (pos.keyboard) {
+    root.removeAttribute("data-kb");
+    root.style.removeProperty("--kb-h");
+    root.style.removeProperty("--kb-top");
+    // キーボードが引っこんだあと、ページが上にずれたまま残ることがある(iPhone のホーム画面のアプリ)
+    if (window.scrollY || window.scrollX) window.scrollTo(0, 0);
+  }
+  pos.keyboard = on;
+}
+
+function scrollScreenTo(top) {
+  const max = Math.max(0, el.screen.scrollHeight - el.screen.clientHeight);
+  const to = Math.min(Math.max(0, Math.round(top)), max);
+  if (Math.abs(to - el.screen.scrollTop) < 1) return;
+  // 同じ場所へ向かっている途中(前に見たときから動いている)なら、掛けなおさない(なめらかな動きが、やり直しにならないように)。
+  // 止まっていたら(ブラウザ自身のスクロールなどで、動きが打ち切られた)、掛けなおす
+  const now = Date.now();
+  const current = el.screen.scrollTop;
+  const moving = current !== pos.seenTop;
+  pos.seenTop = current;
+  if (to === pos.target && now - pos.targetAt < 600 && moving) return;
+  pos.target = to;
+  pos.targetAt = now;
+  el.screen.scrollTo({ top: to, behavior: scrollBehavior() });
+}
+
+/**
+ * 入力中の欄(金額・特別費の内容)を、見える範囲に入れる。
+ * 見える範囲 = 上は時計の行の下、下は「きろくする」の上(キーボードが出ていれば、キーボードの上)。
+ * 金額のときは、入れば、選んだカテゴリの行(特別費なら内容の欄)から金額欄までを見せる。
+ * 入りきらなければ、「金額」の見出しから。それも入らなければ、金額欄だけ。
+ * もう見えているときは動かさない(カテゴリを選び直しただけで、画面が動かないように)
+ */
+function reveal() {
+  const field = editingField();
+  if (!field || el.view.hidden) return;
+  const vv = window.visualViewport;
+  if (!vv) {
+    // 見えている範囲がわからない古い環境: まん中に持ってくるだけ
+    (field === el.amount ? el.amountBox : field).scrollIntoView({ block: "center" });
+    return;
+  }
+  const screenRect = el.screen.getBoundingClientRect();
+  const visibleTop = Math.max(screenRect.top, vv.offsetTop) + safeTop() + 6;
+  const visibleBottom = Math.min(screenRect.bottom, el.footer.getBoundingClientRect().top, vv.offsetTop + vv.height) - 8;
+  const room = visibleBottom - visibleTop;
+
+  const box = field === el.amount ? el.amountBox : el.memo;
+  const bottom = box.getBoundingClientRect().bottom;
+  // 見せたい範囲の上端の候補(広い順)
+  const tops = [];
+  if (field === el.amount) {
+    if (state.kind === KIND.VARIABLE) {
+      const chosen = el.categories.querySelector('[aria-pressed="true"]');
+      if (chosen) tops.push(chosen.getBoundingClientRect().top);
+    } else if (state.kind === KIND.SPECIAL) {
+      tops.push(el.fieldMemo.getBoundingClientRect().top);
+    }
+    tops.push(el.fieldAmount.getBoundingClientRect().top);
+  } else {
+    tops.push(el.fieldMemo.getBoundingClientRect().top);
+  }
+  tops.push(box.getBoundingClientRect().top);
+  const top = tops.find((y) => bottom - y <= room) ?? tops[tops.length - 1];
+
+  let delta = 0;
+  if (bottom > visibleBottom) {
+    delta = bottom - visibleBottom; // 下にかくれている → 上へ送る
+  } else if (top < visibleTop) {
+    delta = top - visibleTop;       // 上にかくれている → 下へ送る
+  }
+  if (Math.abs(delta) < 1) return;
+  scrollScreenTo(el.screen.scrollTop + delta);
+}
+
+/** 画面の高さ・見えている範囲が変わった(キーボードが出た・引っこんだ・向きを変えた) */
+function onViewportChange() {
+  if (pos.frame) return;
+  pos.frame = requestAnimationFrame(() => {
+    pos.frame = 0;
+    fitToKeyboard();
+    if (editingField()) {
+      reveal();
+    } else if (Date.now() < pos.topUntil) {
+      // 記録の直後: キーボードが閉じて高さが変わっても、上へ戻りきるように
+      scrollScreenTo(0);
+    }
+  });
+}
+
+/** 入力欄にフォーカスしたとき: すぐ位置を合わせ、キーボードが出きるまで、何度か合わせ直す */
+function startReveal() {
+  cancelTop();
+  stopReveal();
+  fitToKeyboard();
+  reveal();
+  pos.timers = REVEAL_RETRY_MS.map((ms) =>
+    setTimeout(() => {
+      fitToKeyboard();
+      reveal();
+    }, ms)
+  );
+}
+
+function stopReveal() {
+  for (const id of pos.timers) clearTimeout(id);
+  pos.timers = [];
+}
+
+/**
+ * キーボードを閉じて、画面をいちばん上へ戻す(吹き出しの一言が見えるように)。
+ * 待たせない: 動きはじめるだけで、終わるのは待たない
+ */
+function scrollToTop() {
+  el.amount.blur();
+  el.memo.blur();
+  stopReveal();
+  pos.topUntil = Date.now() + TOP_KEEP_MS;
+  scrollScreenTo(0);
+  // なめらかなスクロールが途中で止められたとき(キーボードが閉じる動きと重なったとき)のために、さいごに確かめる
+  const settle = (last) => {
+    if (pos.topUntil && !editingField() && el.screen.scrollTop > 0) el.screen.scrollTop = 0;
+    if (last) {
+      pos.topUntil = 0;
+    } else {
+      pos.topTimer = setTimeout(settle, TOP_KEEP_MS - TOP_SETTLE_MS, true);
+    }
+  };
+  clearTimeout(pos.topTimer);
+  pos.topTimer = setTimeout(settle, TOP_SETTLE_MS, false);
+}
+
+/** 上へ戻すのをやめる(次の入力を始めた・自分でスクロールした) */
+function cancelTop() {
+  pos.topUntil = 0;
+  clearTimeout(pos.topTimer);
 }
 
 // --- 表示 -------------------------------------------------------------------
@@ -379,6 +589,8 @@ function selectCategory(name) {
   // つづけて金額を打てるように(カテゴリ → 金額 → きろくする の3操作)
   if (!el.amount.value) {
     el.amount.focus({ preventScroll: false });
+    // もう金額欄にいたとき(フォーカスの合図が出ない)も、位置を確かめる。見えていれば動かない
+    reveal();
   }
 }
 
@@ -392,10 +604,21 @@ function amountValue() {
   return digits ? Number(digits) : 0;
 }
 
+/**
+ * 入力チェックで引っかかったとき。
+ *   打つ欄(金額・特別費の内容)が空のとき … その欄(赤いふち)にフォーカスして、見える位置へ。そのまま打てる
+ *   カテゴリを選んでいないとき             … キーボードを閉じて上へ戻し、一言とカテゴリを見せる
+ */
 function invalid(node, message, focusTarget) {
   node.setAttribute("data-invalid", "true");
   say(message, "warn");
-  if (focusTarget) focusTarget.focus();
+  if (focusTarget) {
+    focusTarget.focus();
+    // もうその欄にいたとき(フォーカスの合図が出ない)も、位置を合わせる
+    startReveal();
+  } else {
+    scrollToTop();
+  }
 }
 
 /** 「きろくする」: その場で確かめて、キューに積み、入力欄を空にする(通信は待たない) */
@@ -433,6 +656,7 @@ function submit(event) {
   if (!queue.enqueueAdd(record)) {
     // 端末に書けなかったときは、入力を消さずに知らせる(消すと、記録したつもりになってしまう)
     say(LINE.storage, "warn");
+    scrollToTop();
     return;
   }
 
@@ -440,12 +664,13 @@ function submit(event) {
   state.category = "";
   el.memo.value = "";
   el.amount.value = "";
-  el.amount.blur();
-  el.memo.blur();
   setPressed(Array.from(el.categories.children), () => false);
   renderSuggestions();
   // 吹き出しを「きろくしたにゃ。」に(寝ていた・ジト目だったごまちゃんも、ここで起きる)
   startDone(record);
+  // キーボードを閉じて、いちばん上へ(吹き出しと「取り消す」が見えるように。次の入力は、カテゴリ選びから)。
+  // 上へ動くのは待たない。スクロールでは、吹き出しは挨拶に戻らない(戻るのは、時間がたったとき・次の入力を始めたとき)
+  scrollToTop();
 }
 
 /** 「取り消す」: 直前の1件を取り消して、内容を入力欄に戻す(直して入れ直せるように) */
@@ -600,6 +825,21 @@ export function initInput(callbacks = {}) {
     el.amountBox.removeAttribute("data-invalid");
   });
   el.amountBox.addEventListener("click", () => el.amount.focus());
+  // 打つ欄にフォーカスしたら(カテゴリ・候補を押したとき、欄を直接押したとき)、見える位置へ
+  for (const field of [el.amount, el.memo]) {
+    field.addEventListener("focus", startReveal);
+    field.addEventListener("blur", stopReveal);
+  }
+  // キーボードが出た・引っこんだ(iPhone では、見えている範囲 visualViewport だけが変わる)
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", onViewportChange);
+    window.visualViewport.addEventListener("scroll", onViewportChange);
+  }
+  window.addEventListener("resize", onViewportChange);
+  // 自分でスクロールしはじめたら、上へ戻すのはやめる
+  for (const type of ["pointerdown", "wheel"]) {
+    el.screen.addEventListener(type, cancelTop, { passive: true });
+  }
   el.datePicker.addEventListener("change", pickDate);
   el.datePicker.addEventListener("click", openPicker);
   el.dateToday.addEventListener("click", () => {
