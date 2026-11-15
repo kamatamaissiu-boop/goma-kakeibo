@@ -46,6 +46,10 @@
     <path d="M12 20V4"></path>
     <path d="M19 20v-7"></path>
   </symbol>
+  <symbol id="i-pie" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="8.5"></circle>
+    <path d="M12 3.5V12l6 6"></path>
+  </symbol>
   <symbol id="i-calendar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
     <rect x="4" y="5" width="16" height="15" rx="3"></rect>
     <path d="M4 10h16"></path>
@@ -381,6 +385,93 @@
       </form>
     </section>
 
+    <!-- ===== グラフ(版 0.7.0 から)。中身(SVG・凡例)は JS(charts.js)が作る ===== -->
+    <section class="view view--look view--charts" id="view-charts" aria-label="グラフ" hidden>
+      <div class="look">
+        <!-- どの財布のグラフか(入力画面の「だれの財布」と同じ形)。えらんだほうを、この iPhone が覚える。相手の財布は出さない -->
+        <div class="choices choices--2" id="chart-scopes" role="group" aria-label="どの財布のグラフを見るか">
+          <button class="choice" type="button" data-scope="self" aria-pressed="true">自分</button>
+          <button class="choice" type="button" data-scope="joint" aria-pressed="false">共同口座</button>
+        </div>
+
+        <!-- 月の切り替え(「見る」と同じ部品・同じ範囲) -->
+        <div class="month">
+          <button class="month__btn" id="chart-prev" type="button" aria-label="前の月">
+            <svg aria-hidden="true" width="24" height="24"><use href="#i-prev"></use></svg>
+          </button>
+          <h1 class="month__title" id="chart-title"></h1>
+          <button class="month__btn" id="chart-next" type="button" aria-label="次の月">
+            <svg aria-hidden="true" width="24" height="24"><use href="#i-next"></use></svg>
+          </button>
+        </div>
+
+        <!-- 読み込み前 -->
+        <div class="card look-empty" id="chart-wait" hidden>
+          <img class="look-empty__goma" src="img/goma-face.png" alt="ごまちゃん" width="85" height="100" loading="lazy" decoding="async">
+          <p class="look-empty__text" id="chart-wait-text"></p>
+        </div>
+
+        <div class="look__cards" id="chart-cards">
+
+          <!-- a. 月ごとの推移: 直近6か月の積み上げ棒(変動費・固定費・特別費)+ 収入(共同口座は入金)の目印。棒を押すと、その月に切り替わる -->
+          <section class="card chart" aria-labelledby="trend-title">
+            <div class="chart__head">
+              <h2 class="card__title" id="trend-title">月ごとの推移</h2>
+              <div class="chart__total" id="trend-total"></div>
+            </div>
+            <p class="chart__none" id="trend-none" hidden>グラフにする記録が、まだないにゃ。</p>
+            <div class="chart__plot" id="trend-plot"></div>
+            <ul class="chart__keys" id="trend-keys"></ul>
+            <p class="chart__warn" id="trend-over" hidden></p>
+          </section>
+
+          <!-- b. この月のうちわけ: 変動費のカテゴリ別のドーナツ(上位5つ+その他)。固定費・特別費は、下に小さく添える -->
+          <section class="card chart" aria-labelledby="donut-title">
+            <div class="chart__head">
+              <h2 class="card__title" id="donut-title">この月のうちわけ</h2>
+              <div class="chart__sub">変動費のカテゴリ別</div>
+            </div>
+            <!-- 変動費がない月: ごまちゃんの後ろ姿 -->
+            <div class="chart__empty" id="donut-empty" hidden>
+              <img class="chart__empty-goma" src="img/goma-back.png" alt="ごまちゃんの後ろ姿" width="68" height="80" loading="lazy" decoding="async">
+              <p id="donut-empty-text"></p>
+            </div>
+            <div class="donut" id="donut">
+              <div class="donut__plot" id="donut-plot"></div>
+              <!-- まんなか: ふだんは合計。扇や凡例を押すと、そのカテゴリの金額と割合 -->
+              <div class="donut__center" id="donut-center" aria-live="polite">
+                <div class="label" id="donut-center-label"></div>
+                <div class="donut__amount" id="donut-center-amount"></div>
+                <div class="donut__percent" id="donut-center-percent"></div>
+              </div>
+            </div>
+            <ul class="legend" id="donut-legend"></ul>
+            <div class="extras chart__extras" id="donut-extras" hidden></div>
+          </section>
+
+          <!-- c. 使ったペース: 変動費の日ごとの累計(折れ線)。前の月を薄い線で重ねる。グラフを押すと、その日までの金額 -->
+          <section class="card chart" aria-labelledby="pace-title">
+            <div class="chart__head">
+              <h2 class="card__title" id="pace-title">使ったペース</h2>
+              <div class="chart__sub">変動費の累計</div>
+            </div>
+            <p class="chart__none" id="pace-none" hidden></p>
+            <div id="pace-body">
+              <div class="pace__now" aria-live="polite">
+                <div class="label" id="pace-label"></div>
+                <div class="pace__amount" id="pace-amount"></div>
+                <div class="pace__compare" id="pace-compare"></div>
+              </div>
+              <div class="chart__plot chart__plot--touch" id="pace-plot"></div>
+              <ul class="chart__keys chart__keys--lines" id="pace-keys"></ul>
+              <p class="chart__hint">グラフを押すと、その日までの金額が出ます</p>
+            </div>
+          </section>
+
+        </div>
+      </div>
+    </section>
+
     <!-- ===== 合言葉の入力(初回だけ) ===== -->
     <!-- 表紙の絵、「合言葉をおしえてにゃ」、入力欄、「はじめる」。この画面では下のタブを出さない(app.js) -->
     <section class="view view--login" id="view-login" aria-label="合言葉" hidden>
@@ -603,6 +694,13 @@
       <svg class="tab__ears" aria-hidden="true" width="30" height="9"><use href="#i-ears"></use></svg>
       <svg class="tab__icon" aria-hidden="true" width="24" height="24"><use href="#i-chart"></use></svg>
       見る
+    </button>
+    <!-- はじめは隠しておき、JS(app.js)が出す。版が入れ替わる途中で、前の版の画面(JS・CSS)がこの HTML で動くあいだ、
+         前の版が知らないタブを見せないように(前の版では、下のタブは3つのまま) -->
+    <button class="tab" type="button" data-tab="charts" hidden>
+      <svg class="tab__ears" aria-hidden="true" width="30" height="9"><use href="#i-ears"></use></svg>
+      <svg class="tab__icon" aria-hidden="true" width="24" height="24"><use href="#i-pie"></use></svg>
+      グラフ
     </button>
     <button class="tab" type="button" data-tab="monthly">
       <svg class="tab__ears" aria-hidden="true" width="30" height="9"><use href="#i-ears"></use></svg>

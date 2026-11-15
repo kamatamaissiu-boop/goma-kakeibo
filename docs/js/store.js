@@ -6,7 +6,8 @@ export const KEYS = Object.freeze({
   user: "goma.user",             // この iPhone の持ち主: "ゆうき" | "まゆ"
   categories: "goma.categories", // 変動費のカテゴリ一覧(JSON の配列。前回取得分)
   wallet: "goma.wallet",         // 入力画面で前回えらんだ財布: "self" | "joint"
-  records: "goma.records",       // 記録の一覧(JSON の配列。前回取得分。候補の表示や「見る」で使う)
+  chartScope: "goma.chartScope", // グラフ画面で前回えらんだ切り替え: "self" | "joint"
+  records: "goma.records",      // 記録の一覧(JSON の配列。前回取得分。候補の表示や「見る」で使う)
   queue: "goma.queue",           // まだ保存先に送れていない操作(JSON の配列。queue.js が使う)
   syncedAt: "goma.syncedAt",     // 記録の一覧を最後に取れた時刻(ミリ秒)。一度も取れていなければ無い
   monthlyItems: "goma.monthlyItems",   // 毎月の項目(JSON の配列。前回取得分)
@@ -113,6 +114,15 @@ export function getWallet() {
 
 export function setWallet(wallet) {
   write(KEYS.wallet, wallet === "joint" ? "joint" : "self");
+}
+
+/** グラフ画面で前回えらんだ切り替え("self" = 自分 / "joint" = 共同口座)。初期値は自分 */
+export function getChartScope() {
+  return read(KEYS.chartScope) === "joint" ? "joint" : "self";
+}
+
+export function setChartScope(scope) {
+  write(KEYS.chartScope, scope === "joint" ? "joint" : "self");
 }
 
 /** 前回取得した記録の一覧(なければ空の配列) */

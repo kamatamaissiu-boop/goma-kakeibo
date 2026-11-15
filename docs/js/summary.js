@@ -523,3 +523,219 @@ export function filterDetails(details, user, filter) {
   if (filter === "joint") return details.filter((r) => r["財布"] === WALLET_JOINT || r["種類"] === KIND.DEPOSIT);
   return details;
 }
+
+// --- グラフ(「グラフ」のタブ) -----------------------------------------------------
+//
+// どのグラフも、切り替え(scope)で選んだ財布1つだけを数える。
+//   "self"  … 財布が自分の記録
+//   "joint" … 財布が共同口座の記録
+// 相手の財布の記録は、どこにも混ぜない。ただし共同口座の「入金」の目印だけは、2人の「共同へ入金」の合計
+// (共同口座の動きなので、2人とも見える。仕様書 3章)。
+// 支出の決まりは「見る」と同じ: 変動費 + 特別費 + 固定費(SPEND_KINDS)。貯蓄・収入・税金・共同へ入金は、支出に入れない。
+
+/** グラフの切り替え */
+export const CHART_SCOPE = Object.freeze({ SELF: "self", JOINT: "joint" });
+
+/** 月ごとの推移に、何か月ぶん出すか */
+export const CHART_MONTHS = 6;
+
+/** うちわけで、名前を出すカテゴリの数(それより下は「その他」にまとめる) */
+export const CHART_TOP = 5;
+
+/** まとめたカテゴリの呼び名 */
+export const OTHER_CATEGORY = "その他";
+
+function scopeWallet(user, scope) {
+  return scope === CHART_SCOPE.JOINT ? WALLET_JOINT : user;
+}
+
+/** 記録の日にち(1〜31)。日付が読めない記録は、月の1日として数える(月は「月」の列で決まっているので) */
+function dayOf(record) {
+  const date = String(record["日付"] || "");
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? Number(date.slice(8, 10)) : 1;
+}
+
+/**
+ * 月ごとの推移(積み上げ棒)。
+ *
+ *   出す月: 記録のある月のうち、新しいほうから count か月(切り替えられる月の範囲 monthRange と同じ端)。
+ *           選んでいる月がそれより古いときは、選んでいる月を左端にして count か月。
+ *           記録を始めた月より前は出さない(はじめのうちは、count か月に満たない)。
+ *   段    : 変動費 / 固定費 / 特別費(その財布の分だけ)。total = 3つの合計 =「見る」の支出・合計と同じ金額。
+ *   目印  : 自分 → その月に確定した自分の収入(手取り)の合計。共同口座 → その月の「共同へ入金」の合計(2人分)。
+ *           無い月は 0(目印を出さない)。over = 目印があって、支出がそれを超えた月。
+ *
+ * @param {object[]} records 記録(未送信の分を重ねたもの)
+ * @param {string} user      この iPhone の持ち主
+ * @param {"self"|"joint"} scope
+ * @param {{selected: string, thisMonth: string, count?: number}} opt
+ * @returns {{months: {month: string, variable: number, fixed: number, special: number, total: number, marker: number, over: boolean}[],
+ *            markerKind: "income"|"deposit", max: number}} max = 棒と目印の、いちばん高い金額
+ */
+export function chartTrend(records, user, scope, { selected, thisMonth, count = CHART_MONTHS }) {
+  const wallet = scopeWallet(user, scope);
+  const joint = scope === CHART_SCOPE.JOINT;
+  const range = monthRange(records, user, thisMonth);
+  let end = range.max;
+  let start = addMonth(end, -(count - 1));
+  if (selected && selected < start) {
+    start = selected;
+    end = addMonth(start, count - 1);
+  }
+  if (start < range.min && !(selected && selected < range.min)) start = range.min;
+
+  const map = new Map();
+  for (let month = start; month <= end; month = addMonth(month, 1)) {
+    map.set(month, { month, variable: 0, fixed: 0, special: 0, total: 0, marker: 0, over: false });
+  }
+  for (const r of records) {
+    if (!r) continue;
+    const entry = map.get(recordMonth(r));
+    if (!entry) continue;
+    const amount = amountOf(r);
+    const kind = r["種類"];
+    if (r["財布"] === wallet) {
+      if (kind === KIND.VARIABLE) entry.variable += amount;
+      else if (kind === MONTHLY.FIXED) entry.fixed += amount;
+      else if (kind === KIND.SPECIAL) entry.special += amount;
+    }
+    if (joint ? kind === KIND.DEPOSIT : r["財布"] === user && kind === MONTHLY.INCOME) entry.marker += amount;
+  }
+  let max = 0;
+  const months = Array.from(map.values());
+  for (const entry of months) {
+    entry.total = entry.variable + entry.fixed + entry.special;
+    entry.over = entry.marker > 0 && entry.total > entry.marker;
+    max = Math.max(max, entry.total, entry.marker);
+  }
+  return { months, markerKind: joint ? "deposit" : "income", max };
+}
+
+/** 割合(%)を、合わせて 100 になるように整数にする(端数の大きい順に 1 ずつ足す) */
+function percents(amounts, total) {
+  if (!(total > 0)) return amounts.map(() => 0);
+  const raw = amounts.map((a) => (a / total) * 100);
+  const out = raw.map(Math.floor);
+  let rest = 100 - out.reduce((sum, n) => sum + n, 0);
+  const order = raw.map((v, i) => ({ i, frac: v - Math.floor(v) })).sort((a, b) => b.frac - a.frac || a.i - b.i);
+  for (let k = 0; k < order.length && rest > 0; k++, rest--) out[order[k].i] += 1;
+  return out;
+}
+
+/**
+ * この月のうちわけ(ドーナツ)。その財布の、変動費のカテゴリ別。
+ *
+ *   - 金額の大きい順(同じ金額なら、先に出てきた順)。0円のカテゴリは出さない。
+ *   - 上位 top 個までは名前で出し、それより下は「その他」1つにまとめる(色の数を抑えるため)。
+ *     まとめる相手が1つだけのとき(カテゴリが top+1 個)は、まとめずにそのまま出す(数は同じなので)。
+ *   - percent は整数で、合わせて 100。
+ *   - 固定費・特別費はドーナツに混ぜず、合計だけ返す(下に小さく添える)。spend = 変動費+固定費+特別費。
+ *
+ * @returns {{month: string, total: number, slices: {name: string, amount: number, percent: number, other: boolean, count: number}[],
+ *            fixed: number, special: number, spend: number}} total = 変動費の合計。count = まとめたカテゴリの数(ふつうは 1)
+ */
+export function chartBreakdown(records, user, scope, month, top = CHART_TOP) {
+  const wallet = scopeWallet(user, scope);
+  const categoryMap = new Map();
+  let fixed = 0;
+  let special = 0;
+  for (const r of records) {
+    if (!r || r["財布"] !== wallet || recordMonth(r) !== month) continue;
+    const amount = amountOf(r);
+    if (r["種類"] === KIND.VARIABLE) {
+      const name = String(r["項目"] || "").trim() || NO_CATEGORY;
+      categoryMap.set(name, (categoryMap.get(name) || 0) + amount);
+    } else if (r["種類"] === MONTHLY.FIXED) {
+      fixed += amount;
+    } else if (r["種類"] === KIND.SPECIAL) {
+      special += amount;
+    }
+  }
+  const sorted = Array.from(categoryMap, ([name, amount]) => ({ name, amount }))
+    .filter((c) => c.amount > 0)
+    .sort((a, b) => b.amount - a.amount);
+  let slices = sorted.map((c) => ({ ...c, percent: 0, other: false, count: 1 }));
+  if (sorted.length > top + 1) {
+    const rest = sorted.slice(top);
+    slices = slices.slice(0, top);
+    slices.push({
+      name: OTHER_CATEGORY,
+      amount: rest.reduce((sum, c) => sum + c.amount, 0),
+      percent: 0,
+      other: true,
+      count: rest.length,
+    });
+  }
+  const total = slices.reduce((sum, s) => sum + s.amount, 0);
+  const pct = percents(slices.map((s) => s.amount), total);
+  slices.forEach((s, i) => {
+    s.percent = pct[i];
+  });
+  return { month, total, slices, fixed, special, spend: total + fixed + special };
+}
+
+/** その月の変動費の、日ごとの累計(その財布の分)。daily[d-1] = d 日までの合計 */
+function cumulativeByDay(records, wallet, month) {
+  const days = daysInMonth(month);
+  const perDay = new Array(days).fill(0);
+  let lastRecordDay = 0;
+  for (const r of records) {
+    if (!r || r["財布"] !== wallet || r["種類"] !== KIND.VARIABLE || recordMonth(r) !== month) continue;
+    const amount = amountOf(r);
+    if (amount === 0) continue;
+    const day = Math.min(days, Math.max(1, dayOf(r)));
+    perDay[day - 1] += amount;
+    if (day > lastRecordDay) lastRecordDay = day;
+  }
+  const daily = [];
+  let sum = 0;
+  for (const amount of perDay) {
+    sum += amount;
+    daily.push(sum);
+  }
+  return { days, daily, total: sum, lastRecordDay };
+}
+
+/**
+ * 使ったペース(折れ線)。その月の変動費の、日ごとの累計と、前の月の累計。
+ *
+ *   - 日にちは記録の 日付(お金が動いた日)。フォームから取り込んだ記録も、日付の列のまま。
+ *   - lastDay = 線を引く最後の日。今月なら、きょう(きょうより先の日付の記録があれば、その日)まで。
+ *     過ぎた月・先の月は、月末まで。
+ *   - toDate = lastDay までの累計。
+ *   - prev = 前の月(その財布の変動費が1件もなければ null)。sameDay = 前の月の、同じ日にち(lastDay)までの累計
+ *     (前の月のほうが短いときは、前の月の月末まで)。
+ *
+ * @param {string} today きょう 'YYYY-MM-DD'
+ * @returns {{month: string, days: number, lastDay: number, daily: number[], total: number, toDate: number, isCurrent: boolean,
+ *            prev: {month: string, days: number, daily: number[], total: number, sameDay: number} | null}}
+ */
+export function chartPace(records, user, scope, month, today) {
+  const wallet = scopeWallet(user, scope);
+  const current = cumulativeByDay(records, wallet, month);
+  const isCurrent = month === today.slice(0, 7);
+  const lastDay = isCurrent
+    ? Math.min(current.days, Math.max(Number(today.slice(8, 10)) || 1, current.lastRecordDay))
+    : current.days;
+  const prevMonth = addMonth(month, -1);
+  const before = cumulativeByDay(records, wallet, prevMonth);
+  return {
+    month,
+    days: current.days,
+    lastDay,
+    daily: current.daily,
+    total: current.total,
+    toDate: current.daily[lastDay - 1],
+    isCurrent,
+    prev:
+      before.total > 0
+        ? {
+            month: prevMonth,
+            days: before.days,
+            daily: before.daily,
+            total: before.total,
+            sameDay: before.daily[Math.min(lastDay, before.days) - 1],
+          }
+        : null,
+  };
+}

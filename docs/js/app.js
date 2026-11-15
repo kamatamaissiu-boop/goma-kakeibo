@@ -1,11 +1,12 @@
 // ごまちゃん家計簿 画面の入口。
-//   - どの画面を出すかを決める(入力 / 見る / 毎月の設定 / アルバム / 合言葉)
+//   - どの画面を出すかを決める(入力 / 見る / グラフ / 毎月の設定 / アルバム / 合言葉)
 //   - 合言葉の登録
 //   - 裏での同期(最新データの取得)と、未送信キューを送り直す合図
 //   - Service Worker の登録
 
 import { ApiError, isConfigured, login, sync } from "./api.js";
 import { initAlbum, refreshAlbum, showAlbum } from "./album.js";
+import { initCharts, refreshCharts, setChartsSyncState, showCharts } from "./charts.js";
 import { APP_VERSION } from "./config.js";
 import { initInput, onHide, onResume, refreshData, showInput } from "./input.js";
 import * as photos from "./photos.js";
@@ -20,6 +21,7 @@ const el = {
   views: {
     input: document.getElementById("view-input"),
     view: document.getElementById("view-view"),
+    charts: document.getElementById("view-charts"),
     login: document.getElementById("view-login"),
     monthly: document.getElementById("view-monthly"),
     album: document.getElementById("view-album"),
@@ -43,7 +45,7 @@ const LOGIN_PROMPT = "";
 /** 画面に戻ってきたとき、前回の同期からこの時間がたっていたら取り直す */
 const SYNC_INTERVAL_MS = 5 * 60 * 1000;
 
-/** いま開いている画面: "input" | "view" | "monthly"(ここまでは下のタブ) | "album"(入力画面のカメラボタンから) */
+/** いま開いている画面: "input" | "view" | "charts" | "monthly"(ここまでは下のタブ) | "album"(入力画面のカメラボタンから) */
 let currentTab = "input";
 let lastSyncAt = 0;
 let syncing = false;
@@ -65,6 +67,8 @@ function render() {
     renderAbout();
   } else if (currentTab === "view") {
     name = "view";
+  } else if (currentTab === "charts" && el.views.charts) {
+    name = "charts";
   } else if (currentTab === "album") {
     name = "album";
   } else {
@@ -72,13 +76,15 @@ function render() {
     showInput();
   }
   for (const [key, view] of Object.entries(el.views)) {
-    view.hidden = key !== name;
+    if (view) view.hidden = key !== name;
   }
   // 合言葉の画面では、下のタブを出さない(登録するまで、ほかの画面は開けないので)
   el.tabBar.hidden = name === "login";
-  // 「見る」「毎月の設定」は、見えるようにしてから中身を作る
+  // 「見る」「グラフ」「毎月の設定」は、見えるようにしてから中身を作る(グラフは、見えている幅に合わせて描くので)
   if (name === "view") {
     showView();
+  } else if (name === "charts") {
+    showCharts();
   } else if (name === "monthly") {
     showMonthly();
   } else if (name === "album") {
@@ -233,6 +239,7 @@ async function syncNow() {
   syncing = true;
   resyncNeeded = false;
   setSyncState("loading");
+  setChartsSyncState("loading");
   let state = "error";
   const aikotoba = store.getAikotoba();
   try {
@@ -258,6 +265,7 @@ async function syncNow() {
     } else {
       refreshData();
       refreshMonthly();
+      refreshCharts();
     }
   } catch (err) {
     if (err instanceof ApiError && err.code === "auth") {
@@ -267,6 +275,7 @@ async function syncNow() {
   } finally {
     syncing = false;
     setSyncState(state); // 「見る」が出ていれば、ここで出しなおされる
+    setChartsSyncState(state);
     setMonthlySyncState(state);
     if (resyncNeeded) {
       resyncNeeded = false;
@@ -372,10 +381,16 @@ initMonthly({
     // 同期の途中だったら、その結果は確定の前の内容かもしれないので、取り直す
     if (syncing) resyncNeeded = true;
     refreshData();
+    refreshCharts();
   },
   onAuthLost: handleAuthLost,
   requestSync: syncNow,
 });
+initCharts();
+// 「グラフ」のタブは、HTML では隠してある(版が入れ替わる途中で、前の版の画面に出ないように)。ここで出す
+for (const tab of el.tabs) {
+  if (tab.dataset.tab === "charts" && el.views.charts) tab.hidden = false;
+}
 el.form.addEventListener("submit", submitAikotoba);
 el.forget.addEventListener("click", forgetLogin);
 for (const tab of el.tabs) {
